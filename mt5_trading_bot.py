@@ -58,7 +58,7 @@ CONFIG = {
     # ── Risk management
     "risk_pct":     1.0,        # % of balance risked per trade
     "min_rr":       2.0,        # Minimum Risk : Reward ratio
-    "max_spread":   50,         # Max allowed spread in points
+    "max_spread":   20,         # Max allowed spread in points
     "max_trades":   3,          # Max concurrent bot trades
 
     # ── Strategy parameters
@@ -600,6 +600,30 @@ def calc_lot_size(symbol: str, entry: float, sl: float) -> float:
 #  TRADE EXECUTION
 # ══════════════════════════════════════════════════════════════
 
+def get_filling_mode(symbol: str) -> int:
+    """
+    Return the correct ORDER_FILLING_* constant for the symbol.
+
+    MT5 symbol_info.filling_mode is a bitmask:
+      bit 0 (value 1) → FOK supported
+      bit 1 (value 2) → IOC supported
+      value 0          → only RETURN is supported (common on ECN/STP brokers)
+
+    Using an unsupported mode causes error 10030 (TRADE_RETCODE_INVALID_FILL).
+    """
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return mt5.ORDER_FILLING_RETURN  # safest fallback
+    fm = info.filling_mode
+    if fm == 0:
+        return mt5.ORDER_FILLING_RETURN
+    if fm & 2:   # IOC bit
+        return mt5.ORDER_FILLING_IOC
+    if fm & 1:   # FOK bit
+        return mt5.ORDER_FILLING_FOK
+    return mt5.ORDER_FILLING_RETURN
+
+
 def place_order(sig: dict) -> dict | None:
     symbol = sig["symbol"]
     info   = mt5.symbol_info(symbol)
@@ -640,7 +664,7 @@ def place_order(sig: dict) -> dict | None:
         "magic":        CONFIG["magic_number"],
         "comment":      CONFIG["comment"],
         "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": get_filling_mode(symbol),
     }
 
     res = mt5.order_send(req)
@@ -686,7 +710,7 @@ def close_position(ticket: int) -> bool:
         "magic":        CONFIG["magic_number"],
         "comment":      "Bot close",
         "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": get_filling_mode(p.symbol),
     }
     res = mt5.order_send(req)
     return res.retcode == mt5.TRADE_RETCODE_DONE
