@@ -1,0 +1,24 @@
+# Credentials
+.env
+*.env
+
+# Bot logs
+bot.log
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Cloudflare
+.cloudflared/
+*.json
+
+# macOS / IDE
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,11 @@
+services:
+  # ── Dashboard (static) — talks to your VPS bot via tunnel URL ──
+  - type: web
+    name: ict-smc-dashboard
+    env: python
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: python serve_dashboard.py
+    healthCheckPath: /health
