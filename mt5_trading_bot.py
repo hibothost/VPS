@@ -186,7 +186,22 @@ def _fmt_account(acct) -> dict:
 #  MARKET DATA
 # ══════════════════════════════════════════════════════════════
 
+def ensure_symbol(symbol: str) -> bool:
+    """Make sure the symbol is visible in Market Watch before fetching data."""
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        log.warning(f"Symbol {symbol} not found in MT5")
+        return False
+    if not info.visible:
+        if not mt5.symbol_select(symbol, True):
+            log.warning(f"Could not add {symbol} to Market Watch: {mt5.last_error()}")
+            return False
+        time.sleep(0.3)  # let MT5 subscribe and fetch initial data
+    return True
+
+
 def get_ohlcv(symbol: str, timeframe, n: int = 250) -> pd.DataFrame | None:
+    ensure_symbol(symbol)
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n)
     if rates is None or len(rates) == 0:
         log.warning(f"No data for {symbol} tf={timeframe}: {mt5.last_error()}")
@@ -717,6 +732,9 @@ def bot_loop():
     while state["running"]:
         try:
             symbol = CONFIG["symbol"]
+
+            # Ensure symbol is in Market Watch before fetching data
+            ensure_symbol(symbol)
 
             # Refresh account
             acct = mt5.account_info()
