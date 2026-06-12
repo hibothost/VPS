@@ -900,6 +900,38 @@ def api_symbols():
         return jsonify({"symbols": [], "grouped": {}, "error": str(exc), "source": "error"})
 
 
+@app.route("/api/broker", methods=["GET", "POST"])
+def api_broker():
+    """Get or set MT5 broker login credentials and (re)connect."""
+    if request.method == "POST":
+        data = request.get_json(force=True)
+        login    = data.get("login")
+        password = data.get("password")
+        server   = data.get("server")
+
+        if not (login and password and server):
+            return jsonify({"error": "login, password and server are all required"}), 400
+
+        # Store credentials (password kept in memory only — never returned by GET)
+        CONFIG["login"]    = str(login)
+        CONFIG["password"] = str(password)
+        CONFIG["server"]   = str(server)
+
+        mt5.shutdown()
+        ok = connect_mt5(CONFIG["login"], CONFIG["password"], CONFIG["server"])
+        if ok:
+            return jsonify({"message": "Connected", "account": state["account"]})
+        return jsonify({"error": f"Login failed: {mt5.last_error()}"}), 400
+
+    # GET — never return the password
+    return jsonify({
+        "login":      CONFIG.get("login") or "",
+        "server":     CONFIG.get("server") or "",
+        "connected":  state["connected"],
+        "account":    state.get("account", {}),
+    })
+
+
 @app.route("/api/reconnect", methods=["POST"])
 def api_reconnect():
     """Re-initialise MT5 connection (e.g. after terminal restart)."""
