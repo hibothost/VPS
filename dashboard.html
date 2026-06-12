@@ -41,6 +41,15 @@
   .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--g); box-shadow: 0 0 8px var(--g); animation: pulse 2s infinite; }
   .logo-text { color: var(--g); font-weight: 700; font-size: 13px; letter-spacing: 2px; }
   .price-ticker { display: flex; align-items: center; gap: 8px; }
+  .symbol-quick-select {
+    background: var(--card); border: 1px solid var(--border); color: var(--g);
+    font-family: var(--font); font-size: 12px; font-weight: 700;
+    padding: 4px 8px; border-radius: 4px; cursor: pointer; letter-spacing: 0.5px;
+    appearance: none; -webkit-appearance: none; min-width: 90px;
+  }
+  .symbol-quick-select:hover { border-color: var(--g); }
+  .symbol-quick-select:focus { outline: none; border-color: var(--g); }
+  .symbol-quick-select option { background: var(--surface); color: var(--text); }
   .price-val { font-size: 17px; font-weight: 700; transition: color 0.3s; }
   .header-right { display: flex; align-items: center; gap: 10px; }
   .badge { border-radius: 4px; padding: 3px 10px; font-size: 10px; font-weight: 700; letter-spacing: 1px; border: 1px solid; }
@@ -69,7 +78,7 @@
   .stat-val { font-size: 14px; font-weight: 700; }
 
   /* Main grid */
-  #main { display: grid; grid-template-columns: 190px 1fr 270px; flex: 1; overflow: hidden; }
+  #main { display: grid; grid-template-columns: 210px 1fr 270px; flex: 1; overflow: hidden; }
 
   /* Left panel */
   #left { background: var(--surface); border-right: 1px solid var(--border); padding: 12px; overflow-y: auto; }
@@ -151,6 +160,60 @@
   .chart-stat-lbl { font-size: 9px; color: var(--dim); margin-bottom: 3px; }
   .chart-stat-val { font-size: 12px; font-weight: 700; }
 
+  /* Broker login panel */
+  .broker-input {
+    width: 100%; background: var(--card); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font); font-size: 10px; padding: 5px 7px; border-radius: 3px;
+    margin-bottom: 6px;
+  }
+  .broker-input:focus { outline: none; border-color: var(--g); }
+  .broker-input::placeholder { color: var(--dim); }
+  .btn-broker-connect {
+    width: 100%; background: rgba(0,217,126,.1); border: 1px solid rgba(0,217,126,.3);
+    color: var(--g); font-family: var(--font); font-size: 10px; font-weight: 700;
+    padding: 6px; border-radius: 3px; cursor: pointer; letter-spacing: 1px;
+  }
+  .btn-broker-connect:hover { background: rgba(0,217,126,.2); }
+  .btn-broker-connect:disabled { opacity: .5; cursor: not-allowed; }
+  .broker-status {
+    font-size: 9px; padding: 4px 8px; border-radius: 3px; margin-bottom: 8px;
+    text-align: center;
+  }
+  .broker-status.connected    { background: rgba(0,217,126,.1); color: var(--g); border: 1px solid rgba(0,217,126,.25); }
+  .broker-status.disconnected { background: rgba(255,69,96,.08); color: var(--r); border: 1px solid rgba(255,69,96,.2); }
+  .broker-acct-row { display: flex; justify-content: space-between; font-size: 9px; padding: 2px 0; }
+  .broker-acct-row .lbl { color: var(--dim); }
+  .broker-acct-row .val { color: var(--muted); }
+
+  /* Inline settings panel */
+  .settings-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 0; gap: 6px;
+  }
+  .settings-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+  .settings-input {
+    background: var(--card); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font); font-size: 10px; padding: 3px 6px; border-radius: 3px;
+    width: 64px; text-align: right;
+  }
+  .settings-input:focus { outline: none; border-color: var(--g); }
+  .settings-select {
+    background: var(--card); border: 1px solid var(--border); color: var(--g);
+    font-family: var(--font); font-size: 10px; font-weight: 700; padding: 3px 6px;
+    border-radius: 3px; width: 100%; margin-bottom: 4px;
+  }
+  .settings-select option { background: var(--surface); color: var(--text); }
+  .settings-search {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font); font-size: 10px; padding: 4px 6px; border-radius: 3px;
+    margin-bottom: 4px;
+  }
+  .save-indicator {
+    font-size: 8px; color: var(--g); opacity: 0; transition: opacity .3s;
+    margin-left: 4px;
+  }
+  .save-indicator.show { opacity: 1; }
+
   /* Empty state */
   .empty { text-align: center; color: var(--dim); padding: 50px 20px; }
   .empty-icon { font-size: 28px; margin-bottom: 10px; }
@@ -158,8 +221,6 @@
   .empty-sub { font-size: 10px; color: var(--border); margin-top: 6px; }
 
   /* Config modal */
-  #config-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100; align-items: center; justify-content: center; }
-  #config-overlay.open { display: flex; }
   #config-modal { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; width: 420px; }
   .config-title { font-size: 12px; font-weight: 700; color: var(--g); margin-bottom: 16px; letter-spacing: 1px; }
   .config-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
@@ -207,7 +268,9 @@
   </div>
 
   <div class="price-ticker">
-    <span style="color:var(--dim);font-size:10px" id="price-symbol">EURUSD</span>
+    <select id="price-symbol-select" class="symbol-quick-select" onchange="quickSwitchSymbol(this.value)">
+      <option value="">EURUSD</option>
+    </select>
     <span class="price-val" id="price-val" style="color:var(--g)">—</span>
     <span id="price-arrow" style="font-size:11px;color:var(--g)">▲</span>
   </div>
@@ -215,7 +278,6 @@
   <div class="header-right">
     <span class="badge badge-demo" id="conn-badge">DEMO</span>
     <span class="badge" id="bias-badge">— NEUTRAL</span>
-    <button class="btn btn-secondary" onclick="openConfig()">⚙ CONFIG</button>
     <button class="btn btn-secondary" id="reconnect-btn" onclick="reconnect()" style="display:none">↺ RECONNECT</button>
     <button class="btn btn-secondary" onclick="changeServerUrl()">🔗 SERVER</button>
     <button class="btn btn-start" id="toggle-btn" onclick="toggleBot()">▶ START</button>
@@ -236,8 +298,48 @@
 
   <!-- Left Panel -->
   <div id="left">
-    <div class="sec-hdr">KILL ZONES</div>
+    <div class="sec-hdr">BROKER LOGIN <span class="save-indicator" id="broker-save-ind">✓ saved</span></div>
+    <div id="broker-status" class="broker-status disconnected">Not connected</div>
+    <div id="broker-account-info"></div>
+    <input id="broker-login"    class="broker-input" type="text"     placeholder="Login (account number)" autocomplete="off"/>
+    <input id="broker-password" class="broker-input" type="password" placeholder="Password" autocomplete="off"/>
+    <input id="broker-server"   class="broker-input" type="text"     placeholder="Server (e.g. JustMarkets-Demo3)" autocomplete="off"/>
+    <button class="btn-broker-connect" id="broker-connect-btn" onclick="connectBroker()">🔌 CONNECT</button>
+
+    <div class="sec-hdr" style="margin-top:14px">KILL ZONES</div>
     <div id="kz-list"></div>
+
+    <div class="sec-hdr" style="margin-top:14px">SETTINGS <span class="save-indicator" id="save-ind">✓ saved</span></div>
+    <div id="settings-panel">
+      <input id="set-symbol-search" class="settings-search" placeholder="🔍 Search symbol…" oninput="filterQuickSettings(this.value)" autocomplete="off"/>
+      <select id="set-symbol" class="settings-select" onchange="updateSetting('symbol', this.value)">
+        <option value="">EURUSD</option>
+      </select>
+
+      <div class="settings-row"><span class="settings-label">Risk % / trade</span>
+        <input class="settings-input" id="set-risk" type="number" step="0.1" min="0.1" max="10"
+               onchange="updateSetting('risk_pct', parseFloat(this.value))"/></div>
+
+      <div class="settings-row"><span class="settings-label">Min R:R</span>
+        <input class="settings-input" id="set-rr" type="number" step="0.5" min="0.5" max="10"
+               onchange="updateSetting('min_rr', parseFloat(this.value))"/></div>
+
+      <div class="settings-row"><span class="settings-label">Max trades</span>
+        <input class="settings-input" id="set-max" type="number" step="1" min="1" max="20"
+               onchange="updateSetting('max_trades', parseInt(this.value))"/></div>
+
+      <div class="settings-row"><span class="settings-label">Min confluence</span>
+        <input class="settings-input" id="set-conf" type="number" step="1" min="1" max="5"
+               onchange="updateSetting('min_confluence', parseInt(this.value))"/></div>
+
+      <div class="settings-row"><span class="settings-label">Min FVG (pips)</span>
+        <input class="settings-input" id="set-fvg" type="number" step="0.5" min="0" max="50"
+               onchange="updateSetting('fvg_min_pips', parseFloat(this.value))"/></div>
+
+      <div class="settings-row"><span class="settings-label">Scan interval (s)</span>
+        <input class="settings-input" id="set-scan" type="number" step="5" min="10" max="600"
+               onchange="updateSetting('scan_interval', parseInt(this.value))"/></div>
+    </div>
 
     <div class="sec-hdr" style="margin-top:14px">S&amp;R LEVELS</div>
     <div id="sr-list"></div>
@@ -268,19 +370,6 @@
 
 </div>
 
-<!-- Config Modal -->
-<div id="config-overlay">
-  <div id="config-modal">
-    <div class="config-title">⚙ BOT CONFIGURATION</div>
-    <div style="margin-bottom:12px">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:6px">SYMBOL</div>
-      <input id="cfg-symbol-search" class="config-input sym-search"
-             placeholder="🔍  Filter instruments…" oninput="filterSymbols(this.value)" autocomplete="off"/>
-      <select id="cfg-symbol" class="sym-select" size="7" onchange="onSymbolPick(this.value)">
-        <option disabled>Loading broker instruments…</option>
-      </select>
-      <div id="cfg-symbol-badge" class="sym-loading">fetching symbols…</div>
-    </div>
     <div class="config-row"><span class="config-label">Risk % per trade</span><input class="config-input" id="cfg-risk" type="number" step="0.1" /></div>
     <div class="config-row"><span class="config-label">Min R:R ratio</span><input class="config-input" id="cfg-rr" type="number" step="0.5" /></div>
     <div class="config-row"><span class="config-label">Max open trades</span><input class="config-input" id="cfg-max" type="number" /></div>
@@ -450,6 +539,251 @@ function onSymbolPick(val) {
   badge.textContent = "✓ Selected: " + val;
 }
 
+// ── BROKER LOGIN PANEL ──────────────────────────────────────────────
+async function loadBrokerPanel() {
+  try {
+    const res = await fetch(BASE + "/api/broker", { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+
+    document.getElementById("broker-login").value  = data.login  || "";
+    document.getElementById("broker-server").value = data.server || "";
+    // Password intentionally never returned/populated
+
+    renderBrokerStatus(data.connected, data.account || {});
+  } catch {
+    renderBrokerStatus(false, {});
+  }
+}
+
+function renderBrokerStatus(connected, account) {
+  const statusEl = document.getElementById("broker-status");
+  const infoEl   = document.getElementById("broker-account-info");
+
+  if (connected) {
+    statusEl.className   = "broker-status connected";
+    statusEl.textContent = "✓ Connected — " + (account.broker || "MT5");
+    infoEl.innerHTML = [
+      ["Login",    account.login ?? "—"],
+      ["Balance",  account.balance != null ? "$" + Number(account.balance).toFixed(2) : "—"],
+      ["Currency", account.currency || "—"],
+      ["Leverage", account.leverage ? "1:" + account.leverage : "—"],
+    ].map(([l,v]) => `<div class="broker-acct-row"><span class="lbl">${l}</span><span class="val">${v}</span></div>`).join("");
+  } else {
+    statusEl.className   = "broker-status disconnected";
+    statusEl.textContent = isLive ? "✗ Not connected to MT5" : "— (demo mode)";
+    infoEl.innerHTML = "";
+  }
+}
+
+async function connectBroker() {
+  const login    = document.getElementById("broker-login").value.trim();
+  const password = document.getElementById("broker-password").value;
+  const server   = document.getElementById("broker-server").value.trim();
+
+  if (!login || !password || !server) {
+    alert("Please fill in Login, Password, and Server.");
+    return;
+  }
+
+  const btn = document.getElementById("broker-connect-btn");
+  btn.disabled = true;
+  btn.textContent = "🔌 CONNECTING…";
+
+  try {
+    const res = await fetch(BASE + "/api/broker", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login, password, server }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      document.getElementById("broker-password").value = "";  // clear from field
+      const ind = document.getElementById("broker-save-ind");
+      ind.classList.add("show");
+      setTimeout(() => ind.classList.remove("show"), 1500);
+      renderBrokerStatus(true, data.account || {});
+      await refresh();
+      await loadSettingsPanel();
+    } else {
+      alert("Connection failed: " + (data.error || "unknown error"));
+      renderBrokerStatus(false, {});
+    }
+  } catch {
+    alert("Could not reach bot server.");
+  }
+
+  btn.disabled = false;
+  btn.textContent = "🔌 CONNECT";
+}
+
+// ── INLINE SETTINGS PANEL ──────────────────────────────────────────
+let _settingsLoaded = false;
+let _currentConfig  = {};
+
+async function loadSettingsPanel() {
+  // 1. Load current config values
+  try {
+    const res = await fetch(BASE + "/api/config", { signal: AbortSignal.timeout(5000) });
+    if (res.ok) _currentConfig = await res.json();
+  } catch {}
+
+  document.getElementById("set-risk").value = _currentConfig.risk_pct       ?? 1.0;
+  document.getElementById("set-rr").value   = _currentConfig.min_rr         ?? 2.0;
+  document.getElementById("set-max").value  = _currentConfig.max_trades     ?? 3;
+  document.getElementById("set-conf").value = _currentConfig.min_confluence ?? 3;
+  document.getElementById("set-fvg").value  = _currentConfig.fvg_min_pips   ?? 2.0;
+  document.getElementById("set-scan").value = _currentConfig.scan_interval  ?? 60;
+
+  // 2. Load symbol list (shared with header quick-select)
+  if (!_quickSelectLoaded) {
+    try {
+      const res2  = await fetch(BASE + "/api/symbols", { signal: AbortSignal.timeout(8000) });
+      const data2 = await res2.json();
+      if (data2.symbols && data2.symbols.length) {
+        _allSymbols  = data2.symbols;
+        _groupedSyms = data2.grouped || {};
+      } else {
+        _allSymbols  = Object.values(FALLBACK_SYMBOLS).flat();
+        _groupedSyms = FALLBACK_SYMBOLS;
+      }
+    } catch {
+      _allSymbols  = Object.values(FALLBACK_SYMBOLS).flat();
+      _groupedSyms = FALLBACK_SYMBOLS;
+    }
+    _quickSelectLoaded = true;
+  }
+
+  renderSettingsSymbolSelect(_currentConfig.symbol || "EURUSD", _groupedSyms);
+  _settingsLoaded = true;
+}
+
+function renderSettingsSymbolSelect(currentSymbol, groups) {
+  const sel = document.getElementById("set-symbol");
+  if (!sel) return;
+  let html = "";
+  for (const [grp, syms] of Object.entries(groups)) {
+    if (!syms.length) continue;
+    html += `<optgroup label="── ${grp} ──">`;
+    for (const s of syms) {
+      html += `<option value="${s}"${s === currentSymbol ? " selected" : ""}>${s}</option>`;
+    }
+    html += "</optgroup>";
+  }
+  sel.innerHTML = html || `<option value="${currentSymbol}">${currentSymbol}</option>`;
+}
+
+function filterQuickSettings(q) {
+  q = q.toUpperCase().trim();
+  const groups = q ? { "Results": _allSymbols.filter(s => s.toUpperCase().includes(q)) } : _groupedSyms;
+  renderSettingsSymbolSelect(document.getElementById("set-symbol").value, groups);
+}
+
+let _saveTimer = null;
+async function updateSetting(key, value) {
+  if (value === "" || value == null || (typeof value === "number" && isNaN(value))) return;
+  _currentConfig[key] = value;
+
+  try {
+    await fetch(BASE + "/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [key]: value }),
+      signal: AbortSignal.timeout(5000),
+    });
+    flashSaveIndicator();
+
+    // If symbol changed, sync the header quick-select + reset price ticker
+    if (key === "symbol") {
+      const headerSel = document.getElementById("price-symbol-select");
+      if (headerSel) headerSel.value = value;
+      lastSymbol = ""; lastPrice = 0;
+      refresh();
+    }
+  } catch {
+    alert("Could not reach bot server — setting not saved.");
+  }
+}
+
+function flashSaveIndicator() {
+  const ind = document.getElementById("save-ind");
+  if (!ind) return;
+  ind.classList.add("show");
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => ind.classList.remove("show"), 1200);
+}
+
+// ── HEADER QUICK SYMBOL SWITCH ────────────────────────────────────
+let _quickSelectLoaded = false;
+
+async function populateQuickSelect(currentSymbol) {
+  const sel = document.getElementById("price-symbol-select");
+  if (!sel) return;
+
+  // Load symbol list if we haven't yet (reuse broker list, fallback otherwise)
+  if (!_quickSelectLoaded) {
+    try {
+      const res  = await fetch(BASE + "/api/symbols", { signal: AbortSignal.timeout(8000) });
+      const data = await res.json();
+      if (data.symbols && data.symbols.length) {
+        _allSymbols  = data.symbols;
+        _groupedSyms = data.grouped || {};
+      } else {
+        _allSymbols  = Object.values(FALLBACK_SYMBOLS).flat();
+        _groupedSyms = FALLBACK_SYMBOLS;
+      }
+    } catch {
+      _allSymbols  = Object.values(FALLBACK_SYMBOLS).flat();
+      _groupedSyms = FALLBACK_SYMBOLS;
+    }
+    _quickSelectLoaded = true;
+  }
+
+  // Ensure current symbol is selectable even if not in broker list
+  if (currentSymbol && !_allSymbols.includes(currentSymbol)) {
+    _groupedSyms = { "Current": [currentSymbol], ..._groupedSyms };
+    _allSymbols  = [currentSymbol, ..._allSymbols];
+  }
+
+  let html = "";
+  for (const [grp, syms] of Object.entries(_groupedSyms)) {
+    if (!syms.length) continue;
+    html += `<optgroup label="── ${grp} ──">`;
+    for (const s of syms) {
+      html += `<option value="${s}"${s === currentSymbol ? " selected" : ""}>${s}</option>`;
+    }
+    html += "</optgroup>";
+  }
+  sel.innerHTML = html || `<option value="${currentSymbol}">${currentSymbol}</option>`;
+}
+
+async function quickSwitchSymbol(newSymbol) {
+  if (!newSymbol) return;
+  const sel = document.getElementById("price-symbol-select");
+  sel.disabled = true;
+  try {
+    await fetch(BASE + "/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: newSymbol }),
+      signal: AbortSignal.timeout(5000),
+    });
+    _currentConfig.symbol = newSymbol;
+    flashSaveIndicator();
+    // sync settings panel dropdown
+    const setSel = document.getElementById("set-symbol");
+    if (setSel) setSel.value = newSymbol;
+  } catch {
+    alert("Could not reach bot server — symbol change not saved.");
+  }
+  lastSymbol = "";
+  lastPrice  = 0;
+  sel.disabled = false;
+  await refresh();
+}
+
 // ── BOT SERVER URL ───────────────────────────────────────────────
 function changeServerUrl() {
   const current = BASE || "(not set)";
@@ -468,7 +802,10 @@ function changeServerUrl() {
   } else {
     localStorage.removeItem("botApiUrl");
   }
+  _quickSelectLoaded = false;
   refresh();
+  loadSettingsPanel();
+  loadBrokerPanel();
 }
 
 // ── RECONNECT ─────────────────────────────────────────────────────
@@ -545,6 +882,9 @@ function render(data) {
     cb.className = "badge badge-warn";  cb.textContent = "DISCONNECTED";
   }
 
+  // Keep broker panel status in sync with main status poll
+  renderBrokerStatus(!!data.connected, data.account || {});
+
   // Bias badge
   const bb = document.getElementById("bias-badge");
   bb.className = "badge " + (bias==="BULLISH" ? "badge-bull" : bias==="BEARISH" ? "badge-bear" : "badge-neut");
@@ -590,7 +930,7 @@ function render(data) {
 
   // ── Price ticker — always tracks CONFIG symbol, not just open trades ──
   const sym = data.symbol || lastSymbol || "EURUSD";
-  document.getElementById("price-symbol").textContent = sym;
+  populateQuickSelect(sym);
 
   // Reset baseline when symbol changes so arrows don't flicker
   if (sym !== lastSymbol) { lastPrice = 0; lastSymbol = sym; }
@@ -861,47 +1201,6 @@ async function closeTrade(ticket) {
   }
 }
 
-// ── CONFIG ────────────────────────────────────────────────────────
-async function openConfig() {
-  let currentSymbol = "EURUSD";
-  try {
-    const res = await fetch(BASE+"/api/config", { signal: AbortSignal.timeout(2000) });
-    if (res.ok) {
-      const cfg = await res.json();
-      currentSymbol = cfg.symbol || "EURUSD";
-      document.getElementById("cfg-risk").value = cfg.risk_pct    || 1.0;
-      document.getElementById("cfg-rr").value   = cfg.min_rr      || 2.0;
-      document.getElementById("cfg-max").value  = cfg.max_trades  || 3;
-      document.getElementById("cfg-scan").value = cfg.scan_interval || 60;
-      document.getElementById("cfg-conf").value = cfg.min_confluence || 3;
-    }
-  } catch {}
-  document.getElementById("config-overlay").classList.add("open");
-  // Clear search & load symbol list after modal is visible
-  document.getElementById("cfg-symbol-search").value = "";
-  loadSymbols(currentSymbol);
-}
-function closeConfig() {
-  document.getElementById("config-overlay").classList.remove("open");
-}
-async function saveConfig() {
-  const body = {
-    symbol:          _pickedSymbol || document.getElementById("cfg-symbol").value,
-    risk_pct:   parseFloat(document.getElementById("cfg-risk").value),
-    min_rr:     parseFloat(document.getElementById("cfg-rr").value),
-    max_trades: parseInt(document.getElementById("cfg-max").value),
-    scan_interval: parseInt(document.getElementById("cfg-scan").value),
-    min_confluence: parseInt(document.getElementById("cfg-conf").value),
-  };
-  try {
-    await fetch(BASE+"/api/config", { method:"POST", body: JSON.stringify(body), headers:{"Content-Type":"application/json"}, signal: AbortSignal.timeout(3000) });
-    closeConfig();
-    refresh();  // update ticker immediately after symbol change
-  } catch {
-    alert("Cannot reach bot — config saved locally only.");
-    closeConfig();
-  }
-}
 
 // ── MAIN REFRESH LOOP ─────────────────────────────────────────────
 async function refresh() {
@@ -919,12 +1218,10 @@ if (!BASE && window.location.protocol !== "file:") {
 } else {
   refresh();
 }
+loadBrokerPanel();
+loadSettingsPanel();
 setInterval(refresh, 5000);
 
-// Close modal on outside click
-document.getElementById("config-overlay").addEventListener("click", e => {
-  if (e.target === document.getElementById("config-overlay")) closeConfig();
-});
 </script>
 </body>
 </html>
