@@ -926,9 +926,8 @@ def api_symbols():
         if all_syms is None:
             return jsonify({"symbols": [], "grouped": {}, "error": str(mt5.last_error()), "source": "error"})
 
-        names = sorted({s.name for s in all_syms if s.visible})
-        if not names:
-            names = sorted({s.name for s in all_syms})
+        # FIXED: Removed 'if s.visible' filter to pull EVERY symbol the broker offers
+        names = sorted({s.name for s in all_syms})
 
         groups: dict[str, list[str]] = {
             "Forex": [], "Metals": [], "Indices": [], "Crypto": [], "Energy": [], "Other": [],
