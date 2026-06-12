@@ -140,6 +140,7 @@
   }
   .sym-search:focus { outline: none; border-color: var(--g); }
   .sym-search::placeholder { color: var(--dim); }
+  .sym-search:disabled { opacity: .4; cursor: not-allowed; }
   .sym-group-lbl { font-size: 7px; color: var(--dim); letter-spacing: 1.5px; padding: 4px 0 3px; }
   .sym-grid { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 3px; }
   .sym-btn {
@@ -149,6 +150,13 @@
   }
   .sym-btn:hover { border-color: var(--b); color: var(--b); background: rgba(78,168,255,.06); }
   .sym-btn.active { border-color: var(--g); color: var(--g); background: rgba(0,217,126,.1); }
+  .sym-status { font-size: 9px; color: var(--dim); padding: 8px 4px; text-align: center; }
+  .sym-status.error { color: var(--r); }
+  .sym-refresh {
+    font-size: 8px; color: var(--b); cursor: pointer; padding: 2px 5px; border-radius: 3px;
+    border: 1px solid var(--border); background: var(--card); letter-spacing: .5px;
+  }
+  .sym-refresh:hover { border-color: var(--b); }
 
   /* STRATEGIES */
   .strat-list { display: flex; flex-direction: column; gap: 1px; }
@@ -279,7 +287,7 @@
   </div>
   <div class="header-center">
     <div class="price-block">
-      <span class="price-sym" id="price-sym">EURUSD</span>
+      <span class="price-sym" id="price-sym">—</span>
       <span class="price-val" id="price-val" style="color:var(--g)">—</span>
       <span id="price-arrow" style="font-size:10px;color:var(--g)">▲</span>
     </div>
@@ -346,8 +354,10 @@
 
     <!-- SYMBOL -->
     <div class="ps">
-      <div class="sec-hdr">SYMBOL <span style="color:var(--g);font-size:9px" id="sym-active-lbl">EURUSD</span></div>
-      <input id="sym-search" class="sym-search" placeholder="🔍 Search…" oninput="filterSymbols(this.value)" autocomplete="off"/>
+      <div class="sec-hdr">
+        SYMBOL <span style="color:var(--g);font-size:9px" id="sym-active-lbl">—</span>
+      </div>
+      <input id="sym-search" class="sym-search" placeholder="🔍 Search broker instruments…" oninput="filterSymbols(this.value)" autocomplete="off" disabled/>
       <div id="sym-picker"></div>
     </div>
 
@@ -438,6 +448,7 @@ let currentTab   = "signals";
 let _currentConfig = {};
 let _saveTimer     = null;
 let _symLoaded     = false;
+let _symLoading    = false;
 
 // ── SAVED ACCOUNTS ───────────────────────────────────────────────
 // Stored as array of { id, login, server, broker, balance, currency }
@@ -526,9 +537,11 @@ async function connectAccount() {
       saveSavedAccounts();
       renderSavedAccounts();
 
+      // New account = new broker = symbol list must be refetched
+      _symLoaded = false;
       await refresh();
       await loadSettings();
-      if (!_symLoaded) loadSymbols();
+      await loadSymbols();
     } else {
       alert("Connection failed: " + (data.error || "check credentials"));
     }
@@ -545,6 +558,9 @@ async function logoutAccount() {
     await fetch(BASE + "/api/logout", { method: "POST", signal: AbortSignal.timeout(5000) });
   } catch {}
   updateAccountCard(false, {});
+  _symLoaded = false;
+  renderSymbolPicker({});
+  document.getElementById("sym-search").disabled = true;
 }
 
 function updateAccountCard(connected, account) {
@@ -650,49 +666,84 @@ function updateStratCount() {
   if (el) el.textContent = activeStrats.size+"/"+STRATEGIES.length+" on";
 }
 
-// ── SYMBOL PICKER ────────────────────────────────────────────────
+// ── SYMBOL PICKER — loaded entirely from the connected broker ────
+// No hardcoded/fallback symbol list. If the bot/broker is offline,
+// the picker shows a status message instead of any symbols.
 let _allSymbols  = [];
 let _groupedSyms = {};
-let _activeSym   = localStorage.getItem("activeSym") || "EURUSD";
-
-const FALLBACK = {
-  "Forex":   ["EURUSD","GBPUSD","USDJPY","USDCHF","AUDUSD","NZDUSD","USDCAD","GBPJPY","EURJPY","EURGBP","EURCAD","AUDCAD","GBPCAD","CADJPY","AUDNZD"],
-  "Metals":  ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"],
-  "Indices": ["US30","US500","USTEC","UK100","GER40","FRA40","JPN225","AUS200"],
-  "Crypto":  ["BTCUSD","ETHUSD","LTCUSD","XRPUSD","SOLUSD","ADAUSD"],
-  "Energy":  ["XTIUSD","XBRUSD","NGAS"],
-};
+let _activeSym   = localStorage.getItem("activeSym") || "";
 
 async function loadSymbols() {
+  const searchEl = document.getElementById("sym-search");
+  _symLoading = true;
+  searchEl.disabled = true;
+  renderSymbolPicker(null, "loading");
+
   try {
-    const res  = await fetch(BASE+"/api/symbols",{ signal:AbortSignal.timeout(8000) });
+    const res  = await fetch(BASE+"/api/symbols",{ signal:AbortSignal.timeout(15000) });
     const data = await res.json();
-    if (data.symbols?.length) { _allSymbols=data.symbols; _groupedSyms=data.grouped||{}; }
-    else throw new Error();
+
+    if (data.symbols && data.symbols.length) {
+      _allSymbols  = data.symbols;
+      _groupedSyms = data.grouped || { "All": data.symbols };
+      _symLoaded   = true;
+      searchEl.disabled = false;
+
+      // If no active symbol yet, or the saved one isn't offered by this broker, pick the first available
+      if (!_activeSym || !_allSymbols.includes(_activeSym)) {
+        _activeSym = _allSymbols[0];
+        localStorage.setItem("activeSym", _activeSym);
+      }
+      renderSymbolPicker(_groupedSyms);
+    } else {
+      // Connected but broker returned nothing, or bot not connected to MT5 yet
+      _allSymbols = []; _groupedSyms = {}; _symLoaded = false;
+      renderSymbolPicker(null, data.source === "disconnected" ? "disconnected" : "empty");
+    }
   } catch {
-    _allSymbols  = Object.values(FALLBACK).flat();
-    _groupedSyms = FALLBACK;
+    _allSymbols = []; _groupedSyms = {}; _symLoaded = false;
+    renderSymbolPicker(null, "offline");
   }
-  _symLoaded = true;
-  renderSymbolPicker(_groupedSyms);
+
+  _symLoading = false;
   syncSymLabel();
 }
 
 function filterSymbols(q) {
+  if (!_symLoaded) return;
   q = q.toUpperCase().trim();
-  renderSymbolPicker(q ? {"Results":_allSymbols.filter(s=>s.includes(q))} : _groupedSyms);
+  renderSymbolPicker(q ? {"Results":_allSymbols.filter(s=>s.toUpperCase().includes(q))} : _groupedSyms);
 }
 
-function renderSymbolPicker(groups) {
+function renderSymbolPicker(groups, status) {
+  const el = document.getElementById("sym-picker");
+
+  if (status) {
+    const messages = {
+      loading:      "⏳ Loading instruments from broker…",
+      disconnected: "⚠ Bot not connected to MT5 — connect an account above first.",
+      offline:      "⚠ Cannot reach bot server. Check 🔗 SERVER URL.",
+      empty:        "⚠ Broker returned no instruments.",
+    };
+    const cls = status === "loading" ? "" : "error";
+    el.innerHTML = `<div class="sym-status ${cls}">${messages[status] || "—"}</div>`;
+    return;
+  }
+
+  if (!groups || !Object.keys(groups).length) {
+    el.innerHTML = `<div class="sym-status">No matches</div>`;
+    return;
+  }
+
   let html = "";
   for (const [grp,syms] of Object.entries(groups)) {
     if (!syms.length) continue;
-    html += `<div class="sym-group-lbl">${grp}</div><div class="sym-grid">`;
+    html += `<div class="sym-group-lbl">${grp} (${syms.length})</div><div class="sym-grid">`;
     for (const s of syms)
       html += `<button class="sym-btn ${s===_activeSym?"active":""}" onclick="selectSymbol('${s}')">${s}</button>`;
     html += `</div>`;
   }
-  document.getElementById("sym-picker").innerHTML = html || `<div style="color:var(--dim);font-size:9px;padding:4px">No matches</div>`;
+  el.innerHTML = html || `<div class="sym-status">No matches</div>`;
 }
 
 async function selectSymbol(sym) {
@@ -712,8 +763,8 @@ async function selectSymbol(sym) {
 
 function syncSymLabel() {
   const el = document.getElementById("sym-active-lbl");
-  if (el) el.textContent = _activeSym;
-  document.getElementById("price-sym").textContent = _activeSym;
+  if (el) el.textContent = _activeSym || "—";
+  document.getElementById("price-sym").textContent = _activeSym || "—";
 }
 
 // ── SETTINGS ─────────────────────────────────────────────────────
@@ -769,14 +820,19 @@ function changeServerUrl() {
 async function reconnect() {
   const rb = document.getElementById("reconnect-btn");
   if (rb) { rb.textContent="↺ …"; rb.disabled=true; }
-  try { await fetch(BASE+"/api/reconnect",{ method:"POST", signal:AbortSignal.timeout(5000) }); } catch {}
+  try {
+    await fetch(BASE+"/api/reconnect",{ method:"POST", signal:AbortSignal.timeout(5000) });
+  } catch {}
   setTimeout(()=>{ if (rb) { rb.textContent="↺ RECONNECT"; rb.disabled=false; } },10000);
+  // Reconnect may bring a (re)connected MT5 session with symbols available
+  _symLoaded = false;
+  loadSymbols();
 }
 
 // ── DEMO DATA ─────────────────────────────────────────────────────
 const DEMO = {
   running:false, connected:true, market_bias:"BULLISH",
-  last_scan:new Date().toISOString(), error:null, symbol:_activeSym,
+  last_scan:new Date().toISOString(), error:null, symbol:_activeSym||"EURUSD",
   account:{ login:12345678, balance:10000, equity:10234.56, profit:234.56, currency:"USD", leverage:100, broker:"Demo Broker" },
   active_signals:[
     { id:"BUY_001", symbol:"EURUSD", direction:"BUY", entry:1.08542, sl:1.08342, tp:1.08942,
@@ -853,6 +909,11 @@ function render(data) {
 
   updateAccountCard(!!data.connected, data.account||{});
 
+  // If broker just became connected and we haven't loaded symbols yet, load now
+  if (isLive && data.connected && !_symLoaded && !_symLoading) {
+    loadSymbols();
+  }
+
   const bb = document.getElementById("bias-badge");
   bb.className  = "badge "+(bias==="BULLISH"?"badge-bull":bias==="BEARISH"?"badge-bear":"badge-neut");
   bb.textContent = "H4 "+bias;
@@ -889,7 +950,7 @@ function render(data) {
   if (isLive&&data.error) banner.textContent = "⚠ "+data.error;
 
   // Price ticker
-  const sym = data.symbol||_activeSym||"EURUSD";
+  const sym = data.symbol||_activeSym||"—";
   if (sym!==lastSymbol) { lastPrice=0; lastSymbol=sym; }
   document.getElementById("price-sym").textContent = sym;
 
@@ -1095,9 +1156,11 @@ async function refresh() {
 // ── INIT ──────────────────────────────────────────────────────────
 buildStratList();
 renderSavedAccounts();
-loadSymbols();
+syncSymLabel();
+renderSymbolPicker(null, "offline");
 loadAccountPanel();
 loadSettings();
+loadSymbols();
 
 if (!BASE && window.location.protocol!=="file:") {
   changeServerUrl();
