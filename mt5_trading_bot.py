@@ -129,25 +129,41 @@ sr_cache:        list[dict] = []
 # ══════════════════════════════════════════════════════════════
 
 def connect_mt5(login=None, password=None, server=None) -> bool:
-    if not mt5.initialize():
-        log.error(f"MT5 initialize failed: {mt5.last_error()}")
-        return False
+    """
+    Connect to MT5.  When credentials are supplied they are passed directly
+    to mt5.initialize() so the terminal logs in automatically — no separate
+    mt5.login() call needed (avoids error -6 / Authorization failed).
+    """
+    mt5.shutdown()  # ensure clean state before (re)initialising
 
     if login and password and server:
-        ok = mt5.login(int(login), password=str(password), server=str(server))
-        if not ok:
-            log.error(f"MT5 login failed: {mt5.last_error()}")
-            mt5.shutdown()
-            return False
+        ok = mt5.initialize(
+            login=int(login),
+            password=str(password),
+            server=str(server),
+        )
+    else:
+        ok = mt5.initialize()   # uses whatever account is already open in MT5
+
+    if not ok:
+        err = mt5.last_error()
+        log.error(f"MT5 initialize failed: {err}")
+        state["connected"] = False
+        state["error"]     = f"MT5 init failed: {err}"
+        return False
 
     acct = mt5.account_info()
     if acct is None:
-        log.error("MT5: Cannot get account info — are you logged in?")
+        err = mt5.last_error()
+        log.error(f"MT5: Cannot get account info — {err}")
         mt5.shutdown()
+        state["connected"] = False
+        state["error"]     = "Not logged in to MT5. Connect via the dashboard."
         return False
 
     state["connected"] = True
-    state["account"] = _fmt_account(acct)
+    state["error"]     = None
+    state["account"]   = _fmt_account(acct)
     log.info(f"MT5 connected │ {acct.company} │ #{acct.login} │ {acct.balance:.2f} {acct.currency}")
     return True
 
@@ -935,11 +951,25 @@ def api_broker():
 @app.route("/api/reconnect", methods=["POST"])
 def api_reconnect():
     """Re-initialise MT5 connection (e.g. after terminal restart)."""
-    mt5.shutdown()
     ok = connect_mt5(CONFIG.get("login"), CONFIG.get("password"), CONFIG.get("server"))
     if ok:
         return jsonify({"message": "Reconnected to MT5", "account": state["account"]})
     return jsonify({"error": f"Reconnect failed: {mt5.last_error()}"}), 400
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    """Disconnect from MT5 and clear stored credentials."""
+    state["running"]   = False
+    state["connected"] = False
+    state["account"]   = {}
+    state["error"]     = "Logged out. Connect via the dashboard."
+    CONFIG["login"]    = None
+    CONFIG["password"] = None
+    CONFIG["server"]   = None
+    mt5.shutdown()
+    log.info("MT5 disconnected (user logout)")
+    return jsonify({"message": "Disconnected"})
 
 
 @app.route("/api/close/<int:ticket>", methods=["POST"])
@@ -962,6 +992,8 @@ def api_close_all():
 # ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    import os
+
     print("""
 ╔══════════════════════════════════════════════════════╗
 ║        ICT / SMC + S&R Trading Bot for MT5          ║
@@ -969,25 +1001,40 @@ if __name__ == "__main__":
 ╚══════════════════════════════════════════════════════╝
     """)
 
-    if connect_mt5(
+    # ── Load credentials from environment variables if not set in CONFIG ──
+    if not CONFIG.get("login"):
+        CONFIG["login"]    = os.getenv("MT5_LOGIN")
+    if not CONFIG.get("password"):
+        CONFIG["password"] = os.getenv("MT5_PASSWORD")
+    if not CONFIG.get("server"):
+        CONFIG["server"]   = os.getenv("MT5_SERVER")
+
+    # ── Try initial MT5 connection (non-fatal if it fails) ──
+    connected = connect_mt5(
         CONFIG.get("login"),
         CONFIG.get("password"),
         CONFIG.get("server"),
-    ):
+    )
+
+    if connected:
         a = state["account"]
         print(f"  ✅  Connected  │  {a.get('broker','—')}")
         print(f"  💰  Balance    │  {a.get('balance',0):.2f} {a.get('currency','')}")
         print(f"  📊  Symbol     │  {CONFIG['symbol']}")
-        print(f"  🌐  Dashboard  │  http://localhost:{CONFIG['port']}")
-        print(f"\n  Use the dashboard or POST /api/start to begin trading.\n")
-
-        app.run(
-            host="0.0.0.0",
-            port=CONFIG["port"],
-            debug=False,
-            use_reloader=False,
-        )
     else:
-        print("  ❌  MT5 connection failed.")
-        print("  ➜  Make sure MetaTrader 5 is open and you are logged in.")
-        sys.exit(1)
+        print("  ⚠️   MT5 not connected at startup.")
+        print("  ➜  Open MetaTrader 5 on this machine, then connect via the")
+        print("     dashboard ACCOUNT → CONNECT (login / password / server).")
+        print("  ➜  You can also set MT5_LOGIN / MT5_PASSWORD / MT5_SERVER")
+        print("     as environment variables and restart the bot.")
+
+    print(f"\n  🌐  API server  │  http://localhost:{CONFIG['port']}")
+    print(f"  ℹ️   Bot will start trading once connected + started from dashboard.\n")
+
+    # ── Always start the Flask API so the dashboard can connect ──
+    app.run(
+        host="0.0.0.0",
+        port=CONFIG["port"],
+        debug=False,
+        use_reloader=False,
+    )
