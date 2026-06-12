@@ -56,10 +56,10 @@ CONFIG = {
     "ltf": mt5.TIMEFRAME_M15,  # Lower TF — entry signals
 
     # ── Risk management
-    "risk_pct":     1.0,        # % of balance risked per trade
-    "min_rr":       2.0,        # Minimum Risk : Reward ratio
-    "max_spread":   20,         # Max allowed spread in points
-    "max_trades":   3,          # Max concurrent bot trades
+    "risk_pct":     10.0,        # % of balance risked per trade
+    "min_rr":       4.0,        # Minimum Risk : Reward ratio
+    "max_spread":   50,         # Max allowed spread in points
+    "max_trades":   2,          # Max concurrent bot trades
 
     # ── Strategy parameters
     "swing_lookback":   10,     # Bars each side for swing detection
