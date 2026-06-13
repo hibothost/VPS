@@ -834,10 +834,19 @@ async function loadSymbols() {
   _symLoading = false;
   _symSource  = fromBroker ? "broker" : (_symSource === "broker" ? "broker" : "preset");
 
-  // Pick a default active symbol if none chosen yet, or saved one isn't offered
-  if (!_activeSym || !_allSymbols.includes(_activeSym)) {
-    _activeSym = _allSymbols[0] || "";
-    localStorage.setItem("activeSym", _activeSym);
+  // Only auto-pick a symbol when the list came live from the broker.
+  // In preset/offline mode leave it blank so the bot's own CONFIG drives selection.
+  if (fromBroker) {
+    if (!_activeSym || !_allSymbols.includes(_activeSym)) {
+      _activeSym = _allSymbols[0] || "";
+      localStorage.setItem("activeSym", _activeSym);
+    }
+  } else {
+    // If the saved symbol exists in the preset list keep it, otherwise clear it
+    if (_activeSym && !_allSymbols.includes(_activeSym)) {
+      _activeSym = "";
+      localStorage.removeItem("activeSym");
+    }
   }
 
   updateSymBadge();
@@ -865,7 +874,7 @@ async function forceReloadSymbols() {
 }
 
 function renderSymbolPicker(groups) {
-  let html = "";
+  let html = _activeSym ? "" : `<option value="" disabled selected>— select symbol —</option>`;
   for (const [grp,syms] of Object.entries(groups)) {
     if (!syms.length) continue;
     html += `<optgroup label="${grp}">`;
@@ -982,7 +991,7 @@ async function reconnect() {
 // ── DEMO DATA ─────────────────────────────────────────────────────
 const DEMO = {
   running:false, connected:true, market_bias:"BULLISH",
-  last_scan:new Date().toISOString(), error:null, symbol:_activeSym||"EURUSD",
+  last_scan:new Date().toISOString(), error:null, symbol:_activeSym||"—",
   account:{ login:12345678, balance:10000, equity:10234.56, profit:234.56, currency:"USD", leverage:100, broker:"Demo Broker" },
   active_signals:[
     { id:"BUY_001", symbol:"EURUSD", direction:"BUY", entry:1.08542, sl:1.08342, tp:1.08942,
