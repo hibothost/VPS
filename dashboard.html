@@ -751,24 +751,34 @@ function renderSymbolPicker(groups) {
   let html = "";
   for (const [grp,syms] of Object.entries(groups)) {
     if (!syms.length) continue;
-    html += `<div class="sym-group-lbl">${grp}</div><div class="sym-grid">`;
-    for (const s of syms)
-      html += `<button class="sym-btn ${s===_activeSym?"active":""}" onclick="selectSymbol('${s}')">${s}</button>`;
-    html += `</div>`;
+    html += `<optgroup label="${grp}">`;
+    for (const s of syms) {
+      const isSelected = s === _activeSym ? "selected" : "";
+      html += `<option value="${s}" ${isSelected}>${s}</option>`;
+    }
+    html += `</optgroup>`;
   }
-  document.getElementById("sym-picker").innerHTML = html ||
-    `<div style="color:var(--dim);font-size:9px;padding:4px">No matches</div>`;
+  document.getElementById("sym-picker").innerHTML = html || `<option disabled>No matches</option>`;
 }
 
 async function selectSymbol(sym) {
+  if (!sym) return;
   _activeSym = sym;
   localStorage.setItem("activeSym", sym);
   syncSymLabel();
-  document.querySelectorAll(".sym-btn").forEach(b=>b.classList.toggle("active",b.textContent===sym));
+  
+  // Update UI text immediately
   document.getElementById("price-sym").textContent = sym;
-  lastSymbol=""; lastPrice=0;
+  lastSymbol = ""; 
+  lastPrice = 0;
+  
   try {
-    await fetch(BASE+"/api/config",{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({symbol:sym}), signal:AbortSignal.timeout(4000) });
+    await fetch(BASE+"/api/config",{ 
+        method: "POST", 
+        headers: {"Content-Type":"application/json"}, 
+        body: JSON.stringify({symbol:sym}), 
+        signal: AbortSignal.timeout(4000) 
+    });
     flashSave("save-ind");
     _currentConfig.symbol = sym;
   } catch {}
