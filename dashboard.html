@@ -141,6 +141,33 @@
   .sym-search:disabled { opacity: .5; cursor: not-allowed; }
   .sym-search option { background: var(--surface); color: var(--text); }
   .sym-search optgroup { background: var(--card); color: var(--dim); font-style: normal; }
+  .sym-text-search {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font); font-size: 10px; padding: 5px 7px; border-radius: 3px; margin-bottom: 5px;
+  }
+  .sym-text-search:focus { outline: none; border-color: var(--g); }
+  .sym-text-search::placeholder { color: var(--dim); }
+
+  /* CONFLUENCES TAB */
+  .conf-tab-hdr { font-size: 8px; letter-spacing: 2px; color: var(--dim); margin-bottom: 12px; display:flex; align-items:center; justify-content:space-between; }
+  .conf-tab-sym { font-size: 13px; font-weight: 700; color: var(--text); }
+  .conf-signal-block { border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px; }
+  .conf-signal-block.buy  { border-left: 3px solid var(--g); background: rgba(0,217,126,.02); }
+  .conf-signal-block.sell { border-left: 3px solid var(--r); background: rgba(255,69,96,.02); }
+  .conf-signal-title { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .conf-score-bar { display:flex; align-items:center; gap:6px; margin-bottom:10px; }
+  .conf-score-label { font-size:8px; color:var(--dim); letter-spacing:1.5px; flex-shrink:0; }
+  .conf-score-track { flex:1; height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
+  .conf-score-fill  { height:100%; border-radius:2px; transition: width .4s; }
+  .conf-cat-section { margin-bottom:8px; }
+  .conf-cat-label { font-size:7px; letter-spacing:1.5px; color:var(--dim); margin-bottom:4px; }
+  .conf-items-grid { display:grid; grid-template-columns:1fr 1fr; gap:3px; }
+  .conf-no-signal { text-align:center; color:var(--dim); padding:40px 16px; }
+  .conf-no-signal-icon { font-size:20px; margin-bottom:8px; }
+  .conf-summary-row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .conf-summary-card { flex:1; min-width:60px; background:var(--surface); border:1px solid var(--border); border-radius:4px; padding:8px 10px; text-align:center; }
+  .conf-summary-card-val { font-size:18px; font-weight:700; }
+  .conf-summary-card-lbl { font-size:7px; color:var(--dim); letter-spacing:1px; margin-top:2px; }
 
   /* STRATEGIES */
   .strat-list { display: flex; flex-direction: column; gap: 1px; }
@@ -344,6 +371,7 @@
                    transition:color .15s,border-color .15s">↺</button>
         </div>
       </div>
+      <input id="sym-text-search" class="sym-text-search" type="text" placeholder="🔍 Search symbol…" oninput="filterSymbolPicker(this.value)" autocomplete="off"/>
       <select id="sym-picker" class="sym-search" onchange="selectSymbol(this.value)">
         <option disabled selected>Loading…</option>
       </select>
@@ -396,11 +424,13 @@
   <div id="center">
     <div id="tabs">
       <button class="tab active" onclick="switchTab('signals',this)">SIGNALS</button>
+      <button class="tab" onclick="switchTab('confluences',this)">CONFLUENCES</button>
       <button class="tab" onclick="switchTab('chart',this)">EQUITY</button>
       <button class="tab" onclick="switchTab('history',this)">HISTORY</button>
     </div>
     <div id="tab-content">
       <div id="tab-signals"></div>
+      <div id="tab-confluences" style="display:none"></div>
       <div id="tab-chart"   style="display:none"></div>
       <div id="tab-history" style="display:none"></div>
     </div>
@@ -747,6 +777,17 @@ function renderSymbolPicker(groups) {
     html += `</optgroup>`;
   }
   document.getElementById("sym-picker").innerHTML = html || `<option disabled selected>No instruments</option>`;
+}
+
+function filterSymbolPicker(query) {
+  const q = query.trim().toUpperCase();
+  if (!q) { renderSymbolPicker(_groupedSyms); return; }
+  const filtered = {};
+  for (const [grp, syms] of Object.entries(_groupedSyms)) {
+    const matched = syms.filter(s => s.toUpperCase().includes(q));
+    if (matched.length) filtered[grp] = matched;
+  }
+  renderSymbolPicker(Object.keys(filtered).length ? filtered : {});
 }
 
 async function selectSymbol(sym) {
@@ -1132,14 +1173,124 @@ function renderEquityChart() {
   ].map(([l,v,c])=>`<div class="chart-stat"><div class="chart-stat-lbl">${l}</div><div class="chart-stat-val" style="color:${c}">${v}</div></div>`).join("");
 }
 
+// ── CONFLUENCES TAB ───────────────────────────────────────────────
+let _lastConfluenceData = null;
+
+function renderConfluences(data) {
+  if (data != null) _lastConfluenceData = data;
+  if (currentTab !== "confluences") return;
+  const d    = _lastConfluenceData;
+  const el   = document.getElementById("tab-confluences");
+  const sigs = (d && d.active_signals) || [];
+  const bias = (d && d.market_bias) || "NEUTRAL";
+  const sym  = _activeSym || (d && d.symbol) || "—";
+  const scan = (d && d.last_scan) ? new Date(d.last_scan).toLocaleTimeString() : "—";
+
+  const biasCol = bias==="BULLISH"?"var(--g)":bias==="BEARISH"?"var(--r)":"var(--a)";
+
+  let html = `
+    <div class="conf-tab-hdr">
+      <div>MARKET CONFLUENCES &nbsp;·&nbsp; <span class="conf-tab-sym">${sym}</span></div>
+      <div style="color:${biasCol};font-size:9px;font-weight:700">${bias}</div>
+    </div>`;
+
+  if (!sigs.length) {
+    html += `<div class="conf-no-signal">
+      <div class="conf-no-signal-icon">◎</div>
+      <div style="font-size:11px">No active signals</div>
+      <div style="font-size:9px;color:var(--border);margin-top:4px">Last scan: ${scan}</div>
+    </div>`;
+    el.innerHTML = html;
+    return;
+  }
+
+  const totalHit  = sigs.reduce((s,sg)=>s+(sg.confluence?.hit?.length||0),0);
+  const totalMiss = sigs.reduce((s,sg)=>s+(sg.confluence?.miss?.length||0),0);
+  const totalFactors = totalHit + totalMiss;
+  const pct = totalFactors ? Math.round(totalHit/totalFactors*100) : 0;
+
+  html += `<div class="conf-summary-row">
+    <div class="conf-summary-card">
+      <div class="conf-summary-card-val" style="color:var(--g)">${totalHit}</div>
+      <div class="conf-summary-card-lbl">HIT</div>
+    </div>
+    <div class="conf-summary-card">
+      <div class="conf-summary-card-val" style="color:var(--dim)">${totalMiss}</div>
+      <div class="conf-summary-card-lbl">MISS</div>
+    </div>
+    <div class="conf-summary-card">
+      <div class="conf-summary-card-val" style="color:${pct>=60?"var(--g)":pct>=40?"var(--a)":"var(--r)"}">${pct}%</div>
+      <div class="conf-summary-card-lbl">RATE</div>
+    </div>
+    <div class="conf-summary-card">
+      <div class="conf-summary-card-val" style="color:var(--b)">${sigs.length}</div>
+      <div class="conf-summary-card-lbl">SIGNALS</div>
+    </div>
+  </div>`;
+
+  for (const sig of sigs) {
+    const isLong  = sig.direction === "BUY";
+    const hitArr  = sig.confluence?.hit  || sig.confluence || [];
+    const missArr = sig.confluence?.miss || [];
+    const sc      = sig.score || 0;
+    const scMax   = hitArr.length + missArr.length || 5;
+    const scPct   = Math.round(sc/scMax*100);
+    const scCol   = sc>=4?"var(--g)":sc>=3?"var(--a)":"var(--r)";
+
+    html += `<div class="conf-signal-block ${isLong?"buy":"sell"}">
+      <div class="conf-signal-title">
+        <span class="sig-dir ${isLong?"buy":"sell"}">${isLong?"▲ LONG":"▼ SHORT"}</span>
+        <span style="font-size:13px;font-weight:700">${sig.symbol}</span>
+        ${sig.strategy?`<span class="sig-strat">${sig.strategy}</span>`:""}
+        ${sig.in_kz?'<span class="sig-kz">⚡ KZ</span>':""}
+      </div>
+      <div class="conf-score-bar">
+        <span class="conf-score-label">CONFLUENCE ${sc}/${scMax}</span>
+        <div class="conf-score-track">
+          <div class="conf-score-fill" style="width:${scPct}%;background:${scCol}"></div>
+        </div>
+        <span style="font-size:9px;font-weight:700;color:${scCol}">${scPct}%</span>
+      </div>`;
+
+    if (hitArr.length) {
+      html += `<div class="conf-cat-section">
+        <div class="conf-cat-label">✓ CONFIRMED (${hitArr.length})</div>
+        <div class="conf-items-grid">
+          ${hitArr.map(c=>`<div class="conf-item hit"><div class="conf-dot hit"></div>${c}</div>`).join("")}
+        </div>
+      </div>`;
+    }
+    if (missArr.length) {
+      html += `<div class="conf-cat-section">
+        <div class="conf-cat-label">✗ NOT CONFIRMED (${missArr.length})</div>
+        <div class="conf-items-grid">
+          ${missArr.map(c=>`<div class="conf-item miss"><div class="conf-dot miss"></div>${c}</div>`).join("")}
+        </div>
+      </div>`;
+    }
+
+    html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;gap:10px;font-size:9px;color:var(--dim)">
+      <span>Entry <span style="color:var(--text);font-weight:700">${sig.entry?.toFixed(5)||"—"}</span></span>
+      <span>SL <span style="color:var(--r);font-weight:700">${sig.sl?.toFixed(5)||"—"}</span></span>
+      <span>TP <span style="color:var(--g);font-weight:700">${sig.tp?.toFixed(5)||"—"}</span></span>
+      <span>R:R <span style="color:var(--g);font-weight:700">1:${sig.rr||"—"}</span></span>
+      <span style="margin-left:auto">${new Date(sig.time).toLocaleTimeString()}</span>
+    </div>
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
 // ── TABS ──────────────────────────────────────────────────────────
 function switchTab(name,el) {
   currentTab=name;
   document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
   el.classList.add("active");
-  ["signals","chart","history"].forEach(t=>document.getElementById("tab-"+t).style.display=t===name?"":"none");
-  if (name==="chart")   renderEquityChart();
-  if (name==="history") renderHistory();
+  ["signals","confluences","chart","history"].forEach(t=>document.getElementById("tab-"+t).style.display=t===name?"":"none");
+  if (name==="chart")       renderEquityChart();
+  if (name==="history")     renderHistory();
+  if (name==="confluences") renderConfluences(_lastConfluenceData);
 }
 
 // ── BOT CONTROL ───────────────────────────────────────────────────
@@ -1158,8 +1309,9 @@ async function refresh() {
   const [status,hist,equity]=await Promise.all([fetchStatus(),fetchHistory(),fetchEquity()]);
   tradeHistory=hist; equityCurve=equity;
   render(status);
-  if (currentTab==="history") renderHistory();
-  if (currentTab==="chart")   renderEquityChart();
+  if (currentTab==="history")     renderHistory();
+  if (currentTab==="chart")       renderEquityChart();
+  if (currentTab==="confluences") renderConfluences(status);
 }
 
 // ── INIT ──────────────────────────────────────────────────────────
