@@ -63,6 +63,16 @@
   .stat-label { color: var(--dim); font-size: 8px; letter-spacing: 1.5px; margin-bottom: 3px; }
   .stat-val { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
+  /* ICT ANALYSIS BAR */
+  #ict-bar {
+    display: grid; grid-template-columns: repeat(8,1fr);
+    background: var(--bg); border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .ict-cell { padding: 4px 12px; border-right: 1px solid var(--border); min-width: 0; }
+  .ict-cell:last-child { border-right: none; }
+  .ict-label { color: var(--dim); font-size: 7px; letter-spacing: 1.5px; margin-bottom: 2px; white-space: nowrap; }
+  .ict-val   { font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
   /* MAIN GRID */
   #main { display: grid; grid-template-columns: 220px 1fr 268px; flex: 1; overflow: hidden; }
 
@@ -323,6 +333,18 @@
   <div class="stat-cell"><div class="stat-label">FLOAT P&L</div><div class="stat-val" id="s-profit">—</div></div>
   <div class="stat-cell"><div class="stat-label">WIN RATE</div><div class="stat-val" id="s-winrate">—</div></div>
   <div class="stat-cell"><div class="stat-label">LAST SCAN</div><div class="stat-val" id="s-scan" style="font-size:10px;color:var(--dim)">—</div></div>
+</div>
+
+<!-- ICT ANALYSIS BAR -->
+<div id="ict-bar">
+  <div class="ict-cell"><div class="ict-label">P/D ZONE</div><div class="ict-val" id="ict-pd">—</div></div>
+  <div class="ict-cell"><div class="ict-label">AMD PHASE</div><div class="ict-val" id="ict-amd">—</div></div>
+  <div class="ict-cell"><div class="ict-label">CISD</div><div class="ict-val" id="ict-cisd">—</div></div>
+  <div class="ict-cell"><div class="ict-label">SMT DIV</div><div class="ict-val" id="ict-smt">—</div></div>
+  <div class="ict-cell"><div class="ict-label">BOS / CHoCH</div><div class="ict-val" id="ict-bos">—</div></div>
+  <div class="ict-cell"><div class="ict-label">BREAKERS</div><div class="ict-val" id="ict-brk">—</div></div>
+  <div class="ict-cell"><div class="ict-label">SWEEPS</div><div class="ict-val" id="ict-swp">—</div></div>
+  <div class="ict-cell"><div class="ict-label">BPR</div><div class="ict-val" id="ict-bpr">—</div></div>
 </div>
 
 <!-- MAIN -->
@@ -1011,6 +1033,55 @@ function render(data) {
   wre.textContent = tradeHistory.length ? wr+"%" : "—";
   wre.style.color = wr>=50?"var(--g)":"var(--r)";
   document.getElementById("s-scan").textContent = data.last_scan ? new Date(data.last_scan).toLocaleTimeString() : "—";
+
+  // ── ICT Analysis Bar ────────────────────────────────────────────────
+  // P/D Zone
+  const pdEl = document.getElementById("ict-pd");
+  const pd = data.pd_zone || "UNKNOWN";
+  const pdLabel = {DISCOUNT:"DISCOUNT", PREMIUM:"PREMIUM", EQUILIBRIUM:"EQ", UNKNOWN:"—"}[pd] ?? "—";
+  pdEl.textContent = pdLabel;
+  pdEl.style.color = pd==="DISCOUNT"?"var(--g)":pd==="PREMIUM"?"var(--r)":pd==="EQUILIBRIUM"?"var(--a)":"var(--dim)";
+
+  // AMD / Power of 3
+  const amdEl = document.getElementById("ict-amd");
+  const amd = data.po3_phase || "UNKNOWN";
+  const amdLabel = {ACCUMULATION:"ACCUM", MANIPULATION:"MANIP", DISTRIBUTION:"DISTRIB", UNKNOWN:"—"}[amd] ?? "—";
+  amdEl.textContent = amdLabel;
+  amdEl.style.color = amd==="DISTRIBUTION"?"var(--g)":amd==="MANIPULATION"?"var(--r)":amd==="ACCUMULATION"?"var(--a)":"var(--dim)";
+
+  // CISD
+  const ciEl = document.getElementById("ict-cisd");
+  ciEl.textContent = data.cisd ? "✓ YES" : "—";
+  ciEl.style.color = data.cisd ? "var(--g)" : "var(--dim)";
+
+  // SMT Divergence
+  const smtEl = document.getElementById("ict-smt");
+  smtEl.textContent = data.smt_divergence ? "✓ YES" : "—";
+  smtEl.style.color = data.smt_divergence ? "var(--g)" : "var(--dim)";
+
+  // BOS / CHoCH — show latest event
+  const bosEl = document.getElementById("ict-bos");
+  const bosArr = Array.isArray(data.bos_choch) ? data.bos_choch : [];
+  const latestBos = bosArr[0] || null;
+  if (latestBos) {
+    const bosMap = {BOS_BULLISH:"BOS ↑", BOS_BEARISH:"BOS ↓", CHOCH_BULLISH:"CHoCH ↑", CHOCH_BEARISH:"CHoCH ↓"};
+    bosEl.textContent = bosMap[latestBos] || latestBos;
+    bosEl.style.color = latestBos.includes("BULL") ? "var(--g)" : "var(--r)";
+  } else {
+    bosEl.textContent = "—"; bosEl.style.color = "var(--dim)";
+  }
+
+  // Counts
+  const brkEl = document.getElementById("ict-brk");
+  const cnt = n => (n != null && n !== 0) ? String(n) : "—";
+  brkEl.textContent = cnt(data.breaker_count);
+  brkEl.style.color = data.breaker_count ? "var(--a)" : "var(--dim)";
+  const swpEl = document.getElementById("ict-swp");
+  swpEl.textContent = cnt(data.sweep_count);
+  swpEl.style.color = data.sweep_count ? "var(--p)" : "var(--dim)";
+  const bprEl = document.getElementById("ict-bpr");
+  bprEl.textContent = cnt(data.bpr_count);
+  bprEl.style.color = data.bpr_count ? "var(--a)" : "var(--dim)";
 
   let banner = document.getElementById("error-banner");
   if (!banner) {
