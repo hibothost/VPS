@@ -178,8 +178,10 @@
   .strat-cat { font-size: 7px; padding: 1px 5px; border-radius: 2px; letter-spacing: .4px; flex-shrink: 0; }
   .c-ict  { background: rgba(0,217,126,.1);   color: var(--g); }
   .c-smc  { background: rgba(167,139,250,.1); color: var(--p); }
-  .c-tech { background: rgba(78,168,255,.1);  color: var(--b); }
-  .c-pa   { background: rgba(255,181,71,.1);  color: var(--a); }
+  .c-liq  { background: rgba(78,168,255,.1);  color: var(--b); }
+  .c-time { background: rgba(255,69,96,.1);   color: var(--r); }
+  .c-tech { background: rgba(255,181,71,.1);  color: var(--a); }
+  .c-pa   { background: rgba(100,116,139,.15);color: #94a3b8;  }
 
   /* KILL ZONES */
   .kz-card { padding: 7px 9px; margin-bottom: 4px; border-radius: 4px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
@@ -627,36 +629,55 @@ async function loadAccountPanel() {
 
 // ── STRATEGIES ───────────────────────────────────────────────────
 const STRATEGIES = [
-  { id:"ob",         name:"Order Blocks",         cat:"ict" },
-  { id:"fvg",        name:"Fair Value Gap",        cat:"ict" },
-  { id:"bos",        name:"BOS / CHoCH",           cat:"ict" },
-  { id:"breaker",    name:"Breaker Blocks",        cat:"ict" },
-  { id:"mitig",      name:"Mitigation Blocks",     cat:"ict" },
-  { id:"liq",        name:"Liquidity Sweep",       cat:"ict" },
-  { id:"ote",        name:"OTE (0.62–0.79 Fib)",   cat:"ict" },
-  { id:"silver",     name:"Silver Bullet",         cat:"ict" },
-  { id:"po3",        name:"Power of 3 (AMD)",      cat:"ict" },
-  { id:"turtle",     name:"Turtle Soup",           cat:"ict" },
-  { id:"inducement", name:"Inducement",            cat:"ict" },
-  { id:"sd",         name:"Supply & Demand",       cat:"smc" },
-  { id:"pd",         name:"Premium / Discount",    cat:"smc" },
-  { id:"mss",        name:"Market Structure Shift",cat:"smc" },
-  { id:"imbalance",  name:"Price Imbalance",       cat:"smc" },
-  { id:"vwap",       name:"VWAP Deviation",        cat:"tech"},
-  { id:"fib",        name:"Fibonacci Retracement", cat:"tech"},
-  { id:"sr",         name:"S/R Key Levels",        cat:"tech"},
-  { id:"ema",        name:"EMA 20/50/200",         cat:"tech"},
-  { id:"engulf",     name:"Engulfing Pattern",     cat:"pa"  },
-  { id:"rejection",  name:"Rejection Candle",      cat:"pa"  },
-  { id:"pinbar",     name:"Pin Bar",               cat:"pa"  },
-  { id:"kz",         name:"Kill Zone Entry",       cat:"pa"  },
+  // ── ICT PD ARRAYS ──────────────────────────────────────────────
+  { id:"ob",          name:"Order Block",              cat:"ict"  },
+  { id:"breaker",     name:"Breaker Block",            cat:"ict"  },
+  { id:"mitig",       name:"Mitigation Block",         cat:"ict"  },
+  { id:"fvg",         name:"Fair Value Gap (FVG)",     cat:"ict"  },
+  { id:"ifvg",        name:"Inverse FVG (iFVG)",       cat:"ict"  },
+  { id:"implied_fvg", name:"Implied FVG",              cat:"ict"  },
+  { id:"bpr",         name:"Balanced Price Range",     cat:"ict"  },
+  { id:"rejblock",    name:"Rejection Block",          cat:"ict"  },
+  { id:"suspension",  name:"Suspension Block",         cat:"ict"  },
+  { id:"propulsion",  name:"Propulsion Block",         cat:"ict"  },
+  { id:"vacuum",      name:"Vacuum Block",             cat:"ict"  },
+  { id:"inducement",  name:"Inducement",               cat:"ict"  },
+  // ── ICT STRUCTURE ──────────────────────────────────────────────
+  { id:"bos",         name:"BOS / CHoCH",              cat:"smc"  },
+  { id:"mss",         name:"Market Structure Shift",   cat:"smc"  },
+  { id:"cisd",        name:"CISD",                     cat:"smc"  },
+  { id:"pd",          name:"Premium / Discount",       cat:"smc"  },
+  { id:"ote",         name:"OTE (0.62–0.79 Fib)",      cat:"smc"  },
+  { id:"htf",         name:"HTF Bias Alignment",       cat:"smc"  },
+  { id:"ipda",        name:"IPDA Lookback",            cat:"smc"  },
+  { id:"sd",          name:"Supply & Demand",          cat:"smc"  },
+  // ── ICT LIQUIDITY ──────────────────────────────────────────────
+  { id:"liq",         name:"Liquidity Sweep (BSL/SSL)",cat:"liq"  },
+  { id:"turtle",      name:"Turtle Soup",              cat:"liq"  },
+  { id:"smt",         name:"SMT Divergence",           cat:"liq"  },
+  { id:"nwog",        name:"New Week Opening Gap",     cat:"liq"  },
+  { id:"ndog",        name:"New Day Opening Gap",      cat:"liq"  },
+  // ── ICT TIME-BASED ─────────────────────────────────────────────
+  { id:"kz",          name:"Kill Zone Entry",          cat:"time" },
+  { id:"silver",      name:"Silver Bullet",            cat:"time" },
+  { id:"po3",         name:"Power of 3 (AMD)",         cat:"time" },
+  { id:"macros",      name:"ICT Macros",               cat:"time" },
+  // ── TECHNICAL ──────────────────────────────────────────────────
+  { id:"sr",          name:"S/R Key Levels",           cat:"tech" },
+  { id:"vwap",        name:"VWAP Deviation",           cat:"tech" },
+  { id:"fib",         name:"Fibonacci Retracement",    cat:"tech" },
+  { id:"ema",         name:"EMA 20/50/200",            cat:"tech" },
+  // ── PRICE ACTION ───────────────────────────────────────────────
+  { id:"engulf",      name:"Engulfing Pattern",        cat:"pa"   },
+  { id:"pinbar",      name:"Pin Bar",                  cat:"pa"   },
+  { id:"rejection",   name:"Rejection Candle",         cat:"pa"   },
 ];
-const CAT_LABEL = { ict:"ICT", smc:"SMC", tech:"TECH", pa:"PA" };
-const CAT_CLASS = { ict:"c-ict", smc:"c-smc", tech:"c-tech", pa:"c-pa" };
+const CAT_LABEL = { ict:"ICT", smc:"SMC", liq:"LIQ", time:"TIME", tech:"TECH", pa:"PA" };
+const CAT_CLASS = { ict:"c-ict", smc:"c-smc", liq:"c-liq", time:"c-time", tech:"c-tech", pa:"c-pa" };
 
 let activeStrats = new Set(
   JSON.parse(localStorage.getItem("activeStrats")||"null") ||
-  ["ob","fvg","bos","breaker","liq","ote","sd","pd","sr","kz"]
+  ["ob","fvg","bos","breaker","liq","ote","pd","bpr","mss","kz","silver","po3","htf","sr"]
 );
 
 function buildStratList() {
