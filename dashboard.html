@@ -277,6 +277,20 @@
   .sr-bars { display: flex; gap: 2px; align-items: flex-end; }
   .sr-bar { width: 4px; border-radius: 1px; }
 
+  /* IPDA PANEL */
+  .ipda-row { margin-bottom: 7px; }
+  .ipda-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+  .ipda-period { font-size: 9px; font-weight: 700; color: var(--p); letter-spacing: 1px; }
+  .ipda-pct { font-size: 8px; color: var(--dim); }
+  .ipda-prices { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .ipda-price { font-size: 8px; font-variant-numeric: tabular-nums; }
+  .ipda-price.hi { color: var(--r); }
+  .ipda-price.lo { color: var(--g); }
+  .ipda-track { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; position: relative; }
+  .ipda-fill  { height: 100%; border-radius: 2px; transition: width .4s ease; }
+  .ipda-eq    { position: absolute; top: 0; left: 50%; width: 1px; height: 100%; background: var(--a); opacity: .5; }
+  .ipda-pos-marker { position: absolute; top: -2px; width: 2px; height: 8px; background: var(--text); border-radius: 1px; transform: translateX(-50%); transition: left .4s ease; }
+
   /* HISTORY */
   #history-table { width: 100%; border-collapse: collapse; }
   #history-table th { font-size: 8px; letter-spacing: 1px; color: var(--dim); padding: 5px 7px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
@@ -469,6 +483,10 @@
     <div class="right-sec">
       <div class="sec-hdr">S&amp;R LEVELS</div>
       <div id="sr-list"></div>
+    </div>
+    <div class="right-sec">
+      <div class="sec-hdr">IPDA LOOKBACK</div>
+      <div id="ipda-list"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
     </div>
   </div>
 
@@ -1115,6 +1133,7 @@ function render(data) {
 
   renderKillZones(data.kill_zones||[]);
   renderSR(data.sr_levels||[]);
+  renderIPDA(data.ipda||{}, curPrice);
   renderSignals(data.active_signals||[], bias);
   renderTrades(data.open_trades||[]);
 }
@@ -1144,6 +1163,42 @@ function renderSR(levels) {
       <div class="sr-bars">${bars}</div>
     </div>`;
   }).join("");
+}
+
+function renderIPDA(ipda, curPrice) {
+  const el = document.getElementById("ipda-list");
+  const periods = ["20d","40d","60d"];
+  const labels  = {"20d":"20D","40d":"40D","60d":"60D"};
+  const rows = periods.map(key => {
+    const r = ipda[key];
+    if (!r) return "";
+    const hi = r.high, lo = r.low;
+    const rng = hi - lo;
+    let pct = rng > 0 && curPrice ? Math.min(100, Math.max(0, ((curPrice - lo) / rng) * 100)) : null;
+    const pctStr = pct != null ? pct.toFixed(0)+"%" : "—";
+    const fillCol = pct == null ? "var(--dim)"
+                  : pct > 62   ? "var(--r)"
+                  : pct < 38   ? "var(--g)"
+                  : "var(--a)";
+    const markerLeft = pct != null ? pct.toFixed(1)+"%" : "50%";
+    return `
+    <div class="ipda-row">
+      <div class="ipda-top">
+        <span class="ipda-period">${labels[key]} RANGE</span>
+        <span class="ipda-pct" style="color:${fillCol}">${pct!=null?(pct>62?"PREMIUM":pct<38?"DISCOUNT":"EQ")+" "+pctStr:""}</span>
+      </div>
+      <div class="ipda-prices">
+        <span class="ipda-price hi">H ${hi.toFixed(5)}</span>
+        <span class="ipda-price lo">L ${lo.toFixed(5)}</span>
+      </div>
+      <div class="ipda-track" style="overflow:visible">
+        <div class="ipda-fill" style="width:${pct!=null?pct.toFixed(1):0}%;background:${fillCol};opacity:.35"></div>
+        <div class="ipda-eq"></div>
+        ${pct!=null?`<div class="ipda-pos-marker" style="left:${markerLeft}"></div>`:""}
+      </div>
+    </div>`;
+  }).join("");
+  el.innerHTML = rows || `<div style="color:var(--dim);font-size:9px">No IPDA data</div>`;
 }
 
 function renderSignals(sigs, bias) {
