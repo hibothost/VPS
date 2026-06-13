@@ -75,6 +75,39 @@ CONFIG = {
         {"name": "New York Open", "start": 12, "end": 15},
     ],
 
+    # ── Silver Bullet windows (UTC hours, non-DST / EST+5)
+    "silver_bullet_windows": [
+        {"name": "London SB",  "start_utc": 8,  "end_utc": 9 },
+        {"name": "AM SB",      "start_utc": 15, "end_utc": 16},
+        {"name": "PM SB",      "start_utc": 19, "end_utc": 20},
+    ],
+
+    # ── ICT Macro windows (minutes since midnight UTC)
+    "macro_windows": [
+        {"name": "0233 Macro",        "start": 153,  "end": 180 },
+        {"name": "0403 Macro",        "start": 243,  "end": 270 },
+        {"name": "London Open Macro", "start": 530,  "end": 550 },
+        {"name": "0950 Macro",        "start": 590,  "end": 610 },
+        {"name": "1050 Macro",        "start": 650,  "end": 670 },
+        {"name": "NY Open Macro",     "start": 830,  "end": 850 },
+        {"name": "1015 AM Macro",     "start": 915,  "end": 945 },
+        {"name": "PM Macro",          "start": 1190, "end": 1210},
+    ],
+
+    # ── Vacuum Block minimum size (pips)
+    "vacuum_min_pips": 50.0,
+
+    # ── IPDA lookback periods (trading days)
+    "ipda_lookback": [20, 40, 60],
+
+    # ── SMT Divergence correlated pairs
+    "smt_pairs": {
+        "EURUSD": "GBPUSD",  "GBPUSD": "EURUSD",
+        "USDJPY": "USDCHF",  "USDCHF": "USDJPY",
+        "XAUUSD": "XAGUSD",  "XAGUSD": "XAUUSD",
+        "AUDUSD": "NZDUSD",  "NZDUSD": "AUDUSD",
+    },
+
     # ── Bot internals
     "scan_interval": 60,        # Seconds between analysis scans
     "magic_number":  20250101,  # Unique ID for this bot's trades
@@ -106,16 +139,25 @@ log = logging.getLogger("ICT_Bot")
 # ══════════════════════════════════════════════════════════════
 
 state = {
-    "running":      False,
-    "connected":    False,
-    "market_bias":  "NEUTRAL",
-    "last_scan":    None,
-    "error":        None,
-    "account":      {},
-    "equity_curve": [],   # [{time, equity}, …]  capped at 500 points
-    "ob_count":     0,
-    "fvg_count":    0,
-    "current_price": {},   # {symbol, bid, ask, mid, digits} — updated every scan
+    "running":        False,
+    "connected":      False,
+    "market_bias":    "NEUTRAL",
+    "last_scan":      None,
+    "error":          None,
+    "account":        {},
+    "equity_curve":   [],   # [{time, equity}, …]  capped at 500 points
+    "ob_count":       0,
+    "fvg_count":      0,
+    "breaker_count":  0,
+    "bpr_count":      0,
+    "sweep_count":    0,
+    "pd_zone":        "UNKNOWN",
+    "po3_phase":      "UNKNOWN",
+    "bos_choch":      [],
+    "cisd":           False,
+    "ipda":           {},
+    "smt_divergence": False,
+    "current_price":  {},   # {symbol, bid, ask, mid, digits} — updated every scan
 }
 
 active_signals:  list[dict] = []
@@ -435,6 +477,538 @@ def find_sr_levels(df: pd.DataFrame) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
+#  BREAKER BLOCKS
+# ══════════════════════════════════════════════════════════════
+
+def find_breaker_blocks(df: pd.DataFrame, obs: list[dict]) -> list[dict]:
+    """
+    An Order Block that price has closed through — it flips polarity.
+    Bullish OB violated by close below → becomes Bearish Breaker (resistance).
+    Bearish OB violated by close above → becomes Bullish Breaker (support).
+    """
+    current = float(df["close"].iloc[-1])
+    breakers = []
+    lookback = CONFIG["ob_lookback"]
+    sub = df.iloc[-lookback:]
+    for ob in obs:
+        oh, ol = ob["high"], ob["low"]
+        if ob["type"] == "BULLISH_OB" and current < ol:
+            breakers.append({**ob, "type": "BEARISH_BREAKER"})
+        elif ob["type"] == "BEARISH_OB" and current > oh:
+            breakers.append({**ob, "type": "BULLISH_BREAKER"})
+    return breakers
+
+
+# ══════════════════════════════════════════════════════════════
+#  BALANCED PRICE RANGE (BPR)
+# ══════════════════════════════════════════════════════════════
+
+def find_balanced_price_range(fvgs: list[dict]) -> list[dict]:
+    """
+    BPR = the overlapping zone between a Bullish FVG and a Bearish FVG.
+    Price is algorithmically balanced inside this zone — strong reaction area.
+    """
+    bull_fvgs = [f for f in fvgs if f["type"] == "BULLISH_FVG"]
+    bear_fvgs = [f for f in fvgs if f["type"] == "BEARISH_FVG"]
+    bprs = []
+    for bf in bull_fvgs:
+        for sf in bear_fvgs:
+            lo = max(bf["bottom"], sf["bottom"])
+            hi = min(bf["top"],    sf["top"])
+            if hi > lo:
+                bprs.append({
+                    "type":   "BPR",
+                    "top":    round(hi, 5),
+                    "bottom": round(lo, 5),
+                    "mid":    round((hi + lo) / 2, 5),
+                })
+    return bprs
+
+
+# ══════════════════════════════════════════════════════════════
+#  REJECTION BLOCK
+# ══════════════════════════════════════════════════════════════
+
+def find_rejection_blocks(df: pd.DataFrame, bias: str) -> list[dict]:
+    """
+    Long-wick candle at a key level indicating sharp institutional rejection.
+    Bullish: lower wick > 60 % of total range, small body at top.
+    Bearish: upper wick > 60 % of total range, small body at bottom.
+    """
+    blocks = []
+    sub = df.iloc[-50:]
+    for i in range(len(sub) - 1):
+        c = sub.iloc[i]
+        o, h, l, cl = float(c["open"]), float(c["high"]), float(c["low"]), float(c["close"])
+        rng = h - l
+        if rng == 0:
+            continue
+        body        = abs(cl - o)
+        upper_wick  = h - max(o, cl)
+        lower_wick  = min(o, cl) - l
+
+        if bias in ("BULLISH", "NEUTRAL") and lower_wick / rng > 0.60 and body / rng < 0.30:
+            blocks.append({
+                "type": "BULLISH_REJECTION", "time": str(sub.index[i]),
+                "high": round(h, 5), "low": round(l, 5), "mid": round((h + l) / 2, 5),
+                "wick_pct": round(lower_wick / rng * 100, 0),
+            })
+        elif bias in ("BEARISH", "NEUTRAL") and upper_wick / rng > 0.60 and body / rng < 0.30:
+            blocks.append({
+                "type": "BEARISH_REJECTION", "time": str(sub.index[i]),
+                "high": round(h, 5), "low": round(l, 5), "mid": round((h + l) / 2, 5),
+                "wick_pct": round(upper_wick / rng * 100, 0),
+            })
+    return blocks
+
+
+# ══════════════════════════════════════════════════════════════
+#  SUSPENSION BLOCK
+# ══════════════════════════════════════════════════════════════
+
+def find_suspension_blocks(df: pd.DataFrame) -> list[dict]:
+    """
+    A single candle suspended between a volume imbalance above AND below it.
+    Bullish SB : c.low > prev.high AND nxt.low > c.high (gaps on both sides, price floated up).
+    Bearish SB : prev.low > c.high AND c.low > nxt.high (gaps on both sides, price floated down).
+    """
+    pip = get_pip_size(CONFIG["symbol"])
+    min_gap = 2 * pip
+    blocks = []
+    sub = df.iloc[-80:]
+    for i in range(1, len(sub) - 1):
+        prev, c, nxt = sub.iloc[i-1], sub.iloc[i], sub.iloc[i+1]
+        ph, pl = float(prev["high"]), float(prev["low"])
+        ch, cl = float(c["high"]),    float(c["low"])
+        nh, nl = float(nxt["high"]),  float(nxt["low"])
+
+        gap_below = cl - ph   # gap between prev.high and c.low  (bullish)
+        gap_above = nl - ch   # gap between c.high and nxt.low   (bullish)
+        gap_below_b = pl - ch # gap between c.high and prev.low  (bearish)
+        gap_above_b = cl - nh # gap between nxt.high and c.low   (bearish)
+
+        if gap_below >= min_gap and gap_above >= min_gap:
+            blocks.append({
+                "type": "BULLISH_SUSPENSION", "time": str(sub.index[i]),
+                "high": round(ch, 5), "low": round(cl, 5), "mid": round((ch+cl)/2, 5),
+                "gap_below_pips": round(gap_below/pip, 1), "gap_above_pips": round(gap_above/pip, 1),
+            })
+        elif gap_below_b >= min_gap and gap_above_b >= min_gap:
+            blocks.append({
+                "type": "BEARISH_SUSPENSION", "time": str(sub.index[i]),
+                "high": round(ch, 5), "low": round(cl, 5), "mid": round((ch+cl)/2, 5),
+                "gap_below_pips": round(gap_below_b/pip, 1), "gap_above_pips": round(gap_above_b/pip, 1),
+            })
+    return blocks
+
+
+# ══════════════════════════════════════════════════════════════
+#  PROPULSION BLOCK
+# ══════════════════════════════════════════════════════════════
+
+def find_propulsion_blocks(df: pd.DataFrame, bias: str) -> list[dict]:
+    """
+    Three consecutive same-direction candles launching strongly from a level.
+    Acts as a continuation zone on retest — institutional momentum signature.
+    """
+    pip = get_pip_size(CONFIG["symbol"])
+    blocks = []
+    sub = df.iloc[-60:]
+    for i in range(2, len(sub) - 1):
+        c0, c1, c2 = sub.iloc[i-2], sub.iloc[i-1], sub.iloc[i]
+        bull = all(float(c["close"]) > float(c["open"]) for c in (c0, c1, c2))
+        bear = all(float(c["close"]) < float(c["open"]) for c in (c0, c1, c2))
+
+        if bias in ("BULLISH", "NEUTRAL") and bull:
+            move = (float(c2["close"]) - float(c0["open"])) / pip
+            if move >= 10:
+                blocks.append({
+                    "type": "BULLISH_PROPULSION", "time": str(sub.index[i]),
+                    "high": round(float(c2["high"]), 5), "low": round(float(c0["low"]), 5),
+                    "mid":  round((float(c2["high"]) + float(c0["low"]))/2, 5),
+                    "move_pips": round(move, 1),
+                })
+        elif bias in ("BEARISH", "NEUTRAL") and bear:
+            move = (float(c0["open"]) - float(c2["close"])) / pip
+            if move >= 10:
+                blocks.append({
+                    "type": "BEARISH_PROPULSION", "time": str(sub.index[i]),
+                    "high": round(float(c0["high"]), 5), "low": round(float(c2["low"]), 5),
+                    "mid":  round((float(c0["high"]) + float(c2["low"]))/2, 5),
+                    "move_pips": round(move, 1),
+                })
+    return blocks
+
+
+# ══════════════════════════════════════════════════════════════
+#  VACUUM BLOCK
+# ══════════════════════════════════════════════════════════════
+
+def find_vacuum_blocks(df: pd.DataFrame) -> list[dict]:
+    """
+    Macro-scale FVG (large price void). Price moved so fast almost no
+    trading occurred — acts as a draw-on-liquidity TARGET, not an entry zone.
+    """
+    pip = get_pip_size(CONFIG["symbol"])
+    min_sz = CONFIG.get("vacuum_min_pips", 50.0) * pip
+    current = float(df["close"].iloc[-1])
+    vbs = []
+    for i in range(1, len(df) - 1):
+        prev, nxt = df.iloc[i-1], df.iloc[i+1]
+        # Bullish vacuum
+        top, bot = float(nxt["low"]), float(prev["high"])
+        if top > bot and (top - bot) >= min_sz:
+            vbs.append({
+                "type": "BULLISH_VACUUM", "time": str(df.index[i]),
+                "top": round(top,5), "bottom": round(bot,5), "mid": round((top+bot)/2,5),
+                "size_pips": round((top-bot)/pip, 1), "filled": current < bot,
+            })
+        # Bearish vacuum
+        top, bot = float(prev["low"]), float(nxt["high"])
+        if top > bot and (top - bot) >= min_sz:
+            vbs.append({
+                "type": "BEARISH_VACUUM", "time": str(df.index[i]),
+                "top": round(top,5), "bottom": round(bot,5), "mid": round((top+bot)/2,5),
+                "size_pips": round((top-bot)/pip, 1), "filled": current > top,
+            })
+    return [v for v in vbs if not v["filled"]][-10:]
+
+
+# ══════════════════════════════════════════════════════════════
+#  INDUCEMENT
+# ══════════════════════════════════════════════════════════════
+
+def find_inducement(df: pd.DataFrame, sh: list, sl: list, bias: str) -> list[dict]:
+    """
+    A small liquidity pool (swing point) placed just before the real OB —
+    designed to lure retail traders in the wrong direction.
+    Detection: a recent swing within 30 pips of current price.
+    """
+    pip = get_pip_size(CONFIG["symbol"])
+    current = float(df["close"].iloc[-1])
+    recent_threshold = max(0, len(df) - 30)
+    result = []
+
+    if bias == "BULLISH":
+        for s in (sl or []):
+            if s["i"] >= recent_threshold:
+                dist = abs(current - s["price"]) / pip
+                if dist <= 30:
+                    result.append({"type": "BULLISH_INDUCEMENT",
+                                   "price": round(s["price"], 5), "dist_pips": round(dist, 1)})
+    elif bias == "BEARISH":
+        for s in (sh or []):
+            if s["i"] >= recent_threshold:
+                dist = abs(current - s["price"]) / pip
+                if dist <= 30:
+                    result.append({"type": "BEARISH_INDUCEMENT",
+                                   "price": round(s["price"], 5), "dist_pips": round(dist, 1)})
+    return result[-3:]
+
+
+# ══════════════════════════════════════════════════════════════
+#  LIQUIDITY SWEEPS (BSL / SSL)
+# ══════════════════════════════════════════════════════════════
+
+def find_liquidity_sweeps(df: pd.DataFrame, sh: list, sl: list) -> list[dict]:
+    """
+    A sweep occurs when price spikes beyond a swing high/low (stop hunt)
+    then closes back inside — confirming smart-money absorption.
+    """
+    sweeps = []
+    sub = df.iloc[-30:]
+
+    if sh:
+        lvl = sh[-1]["price"]
+        for i in range(len(sub)):
+            c = sub.iloc[i]
+            if float(c["high"]) > lvl and float(c["close"]) < lvl:
+                sweeps.append({"type": "BSL_SWEEP", "time": str(sub.index[i]),
+                                "level": round(lvl, 5), "bars_ago": len(sub) - i})
+    if sl:
+        lvl = sl[-1]["price"]
+        for i in range(len(sub)):
+            c = sub.iloc[i]
+            if float(c["low"]) < lvl and float(c["close"]) > lvl:
+                sweeps.append({"type": "SSL_SWEEP", "time": str(sub.index[i]),
+                                "level": round(lvl, 5), "bars_ago": len(sub) - i})
+
+    return sorted(sweeps, key=lambda x: x["bars_ago"])[:5]
+
+
+# ══════════════════════════════════════════════════════════════
+#  TURTLE SOUP
+# ══════════════════════════════════════════════════════════════
+
+def find_turtle_soup(df: pd.DataFrame, sh: list, sl: list) -> list[dict]:
+    """
+    False breakout of a prior swing high/low: price spikes through,
+    then reverses sharply back inside — a classic ICT stop-hunt reversal.
+    """
+    setups = []
+    sub = df.iloc[-15:]
+
+    if len(sh) >= 2:
+        target = sh[-2]["price"]
+        for i in range(len(sub) - 1):
+            c = sub.iloc[i]
+            if float(c["high"]) > target and float(c["close"]) < target:
+                setups.append({"type": "TURTLE_SOUP_SELL", "swept": round(target,5),
+                                "high": round(float(c["high"]),5), "bars_ago": len(sub)-i})
+    if len(sl) >= 2:
+        target = sl[-2]["price"]
+        for i in range(len(sub) - 1):
+            c = sub.iloc[i]
+            if float(c["low"]) < target and float(c["close"]) > target:
+                setups.append({"type": "TURTLE_SOUP_BUY", "swept": round(target,5),
+                                "low": round(float(c["low"]),5), "bars_ago": len(sub)-i})
+
+    return sorted(setups, key=lambda x: x["bars_ago"])[:3]
+
+
+# ══════════════════════════════════════════════════════════════
+#  BOS / CHoCH CLASSIFICATION
+# ══════════════════════════════════════════════════════════════
+
+def find_bos_choch(sh: list, sl: list, bias: str) -> list[dict]:
+    """
+    BOS  = Break of Structure — confirms trend continuation.
+    CHoCH = Change of Character — first sign of potential reversal.
+    """
+    events = []
+    if len(sh) < 2 or len(sl) < 2:
+        return events
+    sh_s = sorted(sh, key=lambda x: x["i"])
+    sl_s = sorted(sl, key=lambda x: x["i"])
+
+    if bias == "BULLISH":
+        if sh_s[-1]["price"] > sh_s[-2]["price"]:
+            events.append({"type": "BOS_BULLISH",  "price": round(sh_s[-1]["price"],5)})
+        if sl_s[-1]["price"] < sl_s[-2]["price"]:
+            events.append({"type": "CHOCH_BEARISH", "price": round(sl_s[-1]["price"],5)})
+    elif bias == "BEARISH":
+        if sl_s[-1]["price"] < sl_s[-2]["price"]:
+            events.append({"type": "BOS_BEARISH",  "price": round(sl_s[-1]["price"],5)})
+        if sh_s[-1]["price"] > sh_s[-2]["price"]:
+            events.append({"type": "CHOCH_BULLISH", "price": round(sh_s[-1]["price"],5)})
+    return events
+
+
+# ══════════════════════════════════════════════════════════════
+#  CISD — CHANGE IN STATE OF DELIVERY
+# ══════════════════════════════════════════════════════════════
+
+def detect_cisd(df: pd.DataFrame, bias: str) -> bool:
+    """
+    CISD: a candle closes through the body of the prior opposite-direction
+    candle — the algorithm has shifted its delivery state.
+    Returns True if confirmed within the last 5 bars.
+    """
+    sub = df.iloc[-8:]
+    for i in range(1, len(sub)):
+        curr = sub.iloc[i]
+        prev = sub.iloc[i-1]
+        c_bull = float(curr["close"]) > float(curr["open"])
+        p_bull = float(prev["close"]) > float(prev["open"])
+        if bias == "BULLISH" and c_bull and not p_bull:
+            if float(curr["close"]) > max(float(prev["open"]), float(prev["close"])):
+                return True
+        elif bias == "BEARISH" and not c_bull and p_bull:
+            if float(curr["close"]) < min(float(prev["open"]), float(prev["close"])):
+                return True
+    return False
+
+
+# ══════════════════════════════════════════════════════════════
+#  PREMIUM / DISCOUNT ZONE
+# ══════════════════════════════════════════════════════════════
+
+def get_premium_discount(sh: list, sl: list, current: float) -> str:
+    """
+    Fibonacci equilibrium across the last dealing range:
+      > 62 % → PREMIUM   (prefer shorts)
+      < 38 % → DISCOUNT  (prefer longs)
+      38–62 % → EQUILIBRIUM
+    """
+    if not sh or not sl:
+        return "UNKNOWN"
+    hi  = max(s["price"] for s in sh[-3:])
+    lo  = min(s["price"] for s in sl[-3:])
+    rng = hi - lo
+    if rng == 0:
+        return "UNKNOWN"
+    fib = (current - lo) / rng
+    if fib > 0.62:
+        return "PREMIUM"
+    if fib < 0.38:
+        return "DISCOUNT"
+    return "EQUILIBRIUM"
+
+
+# ══════════════════════════════════════════════════════════════
+#  IPDA LOOKBACK RANGES
+# ══════════════════════════════════════════════════════════════
+
+def get_ipda_ranges(df_daily: pd.DataFrame) -> dict:
+    """
+    ICT's Interbank Price Delivery Algorithm uses 20 / 40 / 60 trading-day
+    reference windows. Returns the high/low of each window.
+    """
+    result = {}
+    for days in CONFIG.get("ipda_lookback", [20, 40, 60]):
+        sub = df_daily.iloc[-days:] if len(df_daily) >= days else df_daily
+        result[f"{days}d"] = {
+            "high": round(float(sub["high"].max()), 5),
+            "low":  round(float(sub["low"].min()),  5),
+        }
+    return result
+
+
+# ══════════════════════════════════════════════════════════════
+#  NWOG / NDOG — OPENING GAPS
+# ══════════════════════════════════════════════════════════════
+
+def find_opening_gaps(df: pd.DataFrame) -> list[dict]:
+    """
+    NDOG = New Day Opening Gap (5 PM → 6 PM NY daily session gap).
+    NWOG = New Week Opening Gap (Friday close → Monday open).
+    Detected as any open-to-previous-close gap ≥ 2 pips on H1 bars.
+    Gaps act as price magnets until filled.
+    """
+    pip = get_pip_size(CONFIG["symbol"])
+    min_gap = 2 * pip
+    gaps = []
+    current = float(df["close"].iloc[-1])
+    sub = df.iloc[-14:]
+
+    for i in range(1, len(sub)):
+        prev_close = float(sub.iloc[i-1]["close"])
+        curr_open  = float(sub.iloc[i]["open"])
+        gap_size   = curr_open - prev_close
+        if abs(gap_size) < min_gap:
+            continue
+        is_nwog = abs(gap_size) > 10 * pip
+        kind    = "NWOG" if is_nwog else "NDOG"
+        dirn    = "BULLISH" if gap_size < 0 else "BEARISH"
+        top     = max(prev_close, curr_open)
+        bot     = min(prev_close, curr_open)
+        filled  = (gap_size > 0 and current < bot) or (gap_size < 0 and current > top)
+        if not filled:
+            gaps.append({
+                "type": f"{dirn}_{kind}", "kind": kind,
+                "top": round(top,5), "bottom": round(bot,5), "mid": round((top+bot)/2,5),
+                "size_pips": round(abs(gap_size)/pip, 1), "time": str(sub.index[i]),
+            })
+    return gaps
+
+
+# ══════════════════════════════════════════════════════════════
+#  SILVER BULLET — TIME CHECK
+# ══════════════════════════════════════════════════════════════
+
+def in_silver_bullet() -> tuple[bool, str | None]:
+    """
+    Silver Bullet windows (UTC, non-DST / EST+5 offset):
+      08:00–09:00  (London 3–4 AM NY)
+      15:00–16:00  (AM 10–11 AM NY)
+      19:00–20:00  (PM 2–3 PM NY)
+    """
+    h = datetime.now(timezone.utc).hour
+    for w in CONFIG.get("silver_bullet_windows", []):
+        if w["start_utc"] <= h < w["end_utc"]:
+            return True, w["name"]
+    return False, None
+
+
+# ══════════════════════════════════════════════════════════════
+#  ICT MACROS — TIME CHECK
+# ══════════════════════════════════════════════════════════════
+
+def in_ict_macro() -> tuple[bool, str | None]:
+    """
+    ICT Macro windows — precise 15–20 min algorithmic activity spikes.
+    Config stores start/end as minutes since midnight UTC.
+    """
+    now = datetime.now(timezone.utc)
+    t   = now.hour * 60 + now.minute
+    for mac in CONFIG.get("macro_windows", []):
+        if mac["start"] <= t < mac["end"]:
+            return True, mac["name"]
+    return False, None
+
+
+# ══════════════════════════════════════════════════════════════
+#  POWER OF 3 — AMD STRUCTURE
+# ══════════════════════════════════════════════════════════════
+
+def detect_power_of_3(df: pd.DataFrame, bias: str) -> str:
+    """
+    Accumulation → Manipulation → Distribution.
+    Reads the last 12 bars as a session:
+      - First 4 bars : tight range → Accumulation
+      - Middle 4 bars: spike in one direction → Manipulation
+      - Last 4 bars  : strong directional move → Distribution
+    Returns the current phase: ACCUMULATION | MANIPULATION | DISTRIBUTION | UNKNOWN
+    """
+    if len(df) < 12:
+        return "UNKNOWN"
+    sub    = df.iloc[-12:]
+    pip    = get_pip_size(CONFIG["symbol"])
+    highs  = sub["high"].values.astype(float)
+    lows   = sub["low"].values.astype(float)
+    opens  = sub["open"].values.astype(float)
+    closes = sub["close"].values.astype(float)
+
+    accum_range = (highs[:4].max() - lows[:4].min()) / pip
+    accum_hi    = highs[:4].max()
+    accum_lo    = lows[:4].min()
+    manip_hi    = highs[4:8].max()
+    manip_lo    = lows[4:8].min()
+    manip_up    = manip_hi > accum_hi + 5 * pip
+    manip_down  = manip_lo < accum_lo - 5 * pip
+    dist_move   = abs(closes[-1] - opens[8]) / pip
+
+    if accum_range < 20:
+        if dist_move > 15 and ((bias == "BULLISH" and manip_down) or (bias == "BEARISH" and manip_up)):
+            return "DISTRIBUTION"
+        if manip_up or manip_down:
+            return "MANIPULATION"
+        return "ACCUMULATION"
+    return "UNKNOWN"
+
+
+# ══════════════════════════════════════════════════════════════
+#  SMT DIVERGENCE
+# ══════════════════════════════════════════════════════════════
+
+def detect_smt_divergence(symbol: str, df: pd.DataFrame, bias: str) -> bool:
+    """
+    Smart Money Tool: two correlated instruments diverge at a swing —
+    one makes a new extreme while its correlated pair fails to confirm.
+    EURUSD new high + GBPUSD lower high → bearish SMT (institutions selling).
+    """
+    corr = CONFIG.get("smt_pairs", {}).get(symbol)
+    if not corr or not state["connected"]:
+        return False
+    try:
+        df2 = get_ohlcv(corr, CONFIG["ltf"], 50)
+        if df2 is None or len(df2) < 10:
+            return False
+        n = max(3, CONFIG["swing_lookback"] // 2)
+        sh1, sl1 = find_swings(df.iloc[-50:],  n)
+        sh2, sl2 = find_swings(df2.iloc[-50:], n)
+        if bias == "BEARISH" and len(sh1) >= 2 and len(sh2) >= 2:
+            if sh1[-1]["price"] > sh1[-2]["price"] and sh2[-1]["price"] < sh2[-2]["price"]:
+                return True
+        if bias == "BULLISH" and len(sl1) >= 2 and len(sl2) >= 2:
+            if sl1[-1]["price"] < sl1[-2]["price"] and sl2[-1]["price"] > sl2[-2]["price"]:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+# ══════════════════════════════════════════════════════════════
 #  KILL ZONE
 # ══════════════════════════════════════════════════════════════
 
@@ -465,27 +1039,17 @@ def kill_zone_status() -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
-#  SIGNAL GENERATION  (ICT/SMC confluence scoring)
+#  SIGNAL GENERATION  (ICT/SMC confluence scoring — full suite)
 # ══════════════════════════════════════════════════════════════
 
-def generate_signals(
-    symbol: str,
-    bias: str,
-    obs: list[dict],
-    fvgs: list[dict],
-    sr:   list[dict],
-) -> list[dict]:
+def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
     """
-    Score each unmitigated Order Block against:
-      +1  HTF bias alignment
-      +1  Price entering OB zone
-      +1  Overlapping FVG (liquidity void)
-      +1  Nearby S&R level (within 20 pips)
-      +1  Inside Kill Zone
-
-    Minimum score == CONFIG["min_confluence"] to produce a signal.
-    
-    Returns signals with detailed confluence breakdown for dashboard.
+    Score each unmitigated Order Block against up to 22 ICT/SMC factors.
+    ctx keys (produced by bot_loop):
+      obs, fvgs, sr, sh, sl, breakers, bprs, rej_blocks, suspensions,
+      propulsions, vacuums, inducements, sweeps, turtle_soups, bos_choch,
+      cisd, pd_zone, ipda, gaps, po3_phase,
+      is_kz, kz_name, is_sb, sb_name, is_macro, macro_name
     """
     tick = get_tick(symbol)
     if tick is None:
@@ -494,7 +1058,29 @@ def generate_signals(
     bid, ask = float(tick.bid), float(tick.ask)
     pip = get_pip_size(symbol)
     buf = CONFIG["sl_buffer_pips"] * pip
-    is_kz, kz_name = in_kill_zone()
+
+    obs          = ctx.get("obs", [])
+    fvgs         = ctx.get("fvgs", [])
+    sr           = ctx.get("sr", [])
+    bprs         = ctx.get("bprs", [])
+    rej_blocks   = ctx.get("rej_blocks", [])
+    sweeps       = ctx.get("sweeps", [])
+    turtle_soups = ctx.get("turtle_soups", [])
+    bos_choch    = ctx.get("bos_choch", [])
+    inducements  = ctx.get("inducements", [])
+    gaps         = ctx.get("gaps", [])
+    propulsions  = ctx.get("propulsions", [])
+    cisd         = ctx.get("cisd", False)
+    pd_zone      = ctx.get("pd_zone", "UNKNOWN")
+    ipda         = ctx.get("ipda", {})
+    po3_phase    = ctx.get("po3_phase", "UNKNOWN")
+    is_kz        = ctx.get("is_kz", False)
+    kz_name      = ctx.get("kz_name", None)
+    is_sb        = ctx.get("is_sb", False)
+    sb_name      = ctx.get("sb_name", None)
+    is_macro     = ctx.get("is_macro", False)
+    macro_name   = ctx.get("macro_name", None)
+
     signals = []
 
     for ob in obs[-20:]:
@@ -502,69 +1088,263 @@ def generate_signals(
         hit: list[str] = []
         miss: list[str] = []
 
-        # ── BULLISH setup ─────────────────────────────────────
+        # ── BULLISH setup ─────────────────────────────────────────────────
         if ob["type"] == "BULLISH_OB" and bias == "BULLISH":
-            if ol <= ask <= oh:
-                hit.append("HTF Bullish Bias")
-                hit.append("Price in Bullish OB")
+            if not (ol <= ask <= oh):
+                continue
+            hit.append("HTF Bullish Bias")
+            hit.append("Price in Bullish OB")
 
-                for fvg in fvgs:
-                    if fvg["type"] == "BULLISH_FVG" and fvg["bottom"] <= oh and fvg["top"] >= ol:
-                        hit.append(f"Bullish FVG ({fvg['size_pips']} pips)")
-                        break
-                else:
-                    miss.append("No FVG confluence")
+            # FVG overlap
+            if any(f["type"] == "BULLISH_FVG" and f["bottom"] <= oh and f["top"] >= ol for f in fvgs):
+                hit.append("Bullish FVG overlap")
+            else:
+                miss.append("No FVG confluence")
 
-                for lvl in sr[:6]:
-                    if lvl["type"] == "SUPPORT" and lvl["dist_pips"] < 20:
-                        hit.append(f"Support @ {lvl['price']:.5f}")
-                        break
-                else:
-                    miss.append("No nearby S&R")
+            # S&R proximity
+            near_sr = [v for v in sr[:6] if v["type"] == "SUPPORT" and v["dist_pips"] < 20]
+            if near_sr:
+                hit.append(f"Support @ {near_sr[0]['price']:.5f}")
+            else:
+                miss.append("No nearby S&R")
 
-                if is_kz:
-                    hit.append(f"Kill Zone: {kz_name}")
-                else:
-                    miss.append("Outside kill zone")
+            # Kill Zone
+            if is_kz:
+                hit.append(f"Kill Zone: {kz_name}")
+            else:
+                miss.append("Outside kill zone")
 
-                if len(hit) >= CONFIG["min_confluence"]:
-                    sl = ol - buf
-                    tp = ask + (ask - sl) * CONFIG["min_rr"]
-                    signals.append(_build_signal("BUY", symbol, ask, sl, tp, hit, miss, ob, is_kz, pip))
-                else:
-                    miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
+            # Silver Bullet
+            if is_sb:
+                hit.append(f"Silver Bullet: {sb_name}")
+            else:
+                miss.append("No Silver Bullet")
 
-        # ── BEARISH setup ─────────────────────────────────────
+            # ICT Macro
+            if is_macro:
+                hit.append(f"ICT Macro: {macro_name}")
+            else:
+                miss.append("No macro window")
+
+            # Discount zone (ideal for longs)
+            if pd_zone == "DISCOUNT":
+                hit.append("Price in Discount zone")
+            elif pd_zone == "PREMIUM":
+                miss.append("Price in Premium (unfavourable for BUY)")
+            else:
+                miss.append(f"Price at {pd_zone}")
+
+            # Liquidity sweep (SSL swept → bullish)
+            ssl_sweeps = [s for s in sweeps if s["type"] == "SSL_SWEEP" and s["bars_ago"] <= 10]
+            if ssl_sweeps:
+                hit.append(f"SSL swept {ssl_sweeps[0]['bars_ago']} bars ago")
+            else:
+                miss.append("No recent SSL sweep")
+
+            # Turtle Soup BUY
+            if any(t["type"] == "TURTLE_SOUP_BUY" and t["bars_ago"] <= 8 for t in turtle_soups):
+                hit.append("Turtle Soup BUY")
+            else:
+                miss.append("No Turtle Soup")
+
+            # BPR nearby
+            near_bpr = [b for b in bprs if b["bottom"] <= oh and b["top"] >= ol]
+            if near_bpr:
+                hit.append(f"BPR @ {near_bpr[0]['mid']:.5f}")
+            else:
+                miss.append("No BPR")
+
+            # Opening Gap (NWOG/NDOG) nearby
+            near_gap = [g for g in gaps if g["type"].startswith("BULLISH") and
+                        g["bottom"] <= oh + 10*pip and g["top"] >= ol - 10*pip]
+            if near_gap:
+                hit.append(f"{near_gap[0]['kind']} nearby ({near_gap[0]['size_pips']} pips)")
+            else:
+                miss.append("No opening gap")
+
+            # CISD
+            if cisd:
+                hit.append("CISD bullish confirmed")
+            else:
+                miss.append("No CISD")
+
+            # Power of 3
+            if po3_phase == "DISTRIBUTION":
+                hit.append("AMD: Distribution phase")
+            elif po3_phase == "MANIPULATION":
+                miss.append("AMD: Manipulation phase")
+            else:
+                miss.append(f"AMD: {po3_phase}")
+
+            # BOS confirmed
+            if any(e["type"] == "BOS_BULLISH" for e in bos_choch):
+                hit.append("BOS confirmed bullish")
+            else:
+                miss.append("No BOS")
+
+            # Rejection Block at OB
+            near_rej = [r for r in rej_blocks if r["type"] == "BULLISH_REJECTION" and
+                        r["low"] <= oh and r["high"] >= ol]
+            if near_rej:
+                hit.append(f"Rejection Block ({near_rej[0]['wick_pct']:.0f}% wick)")
+            else:
+                miss.append("No Rejection Block")
+
+            # Propulsion block in direction
+            if any(p["type"] == "BULLISH_PROPULSION" for p in propulsions):
+                hit.append("Bullish Propulsion Block")
+            else:
+                miss.append("No Propulsion Block")
+
+            # IPDA range confluence (price near 20d low)
+            ipda20 = ipda.get("20d", {})
+            if ipda20 and ask <= ipda20.get("low", 0) * 1.001:
+                hit.append("Near IPDA 20d Low")
+            else:
+                miss.append("No IPDA confluence")
+
+            # Inducement nearby (cleared)
+            if not inducements:
+                hit.append("Inducement cleared")
+            else:
+                miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
+
+            if len(hit) >= CONFIG["min_confluence"]:
+                sl_price = ol - buf
+                tp_price = ask + (ask - sl_price) * CONFIG["min_rr"]
+                signals.append(_build_signal("BUY", symbol, ask, sl_price, tp_price,
+                                            hit, miss, ob, is_kz, pip))
+            else:
+                miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
+
+        # ── BEARISH setup ─────────────────────────────────────────────────
         elif ob["type"] == "BEARISH_OB" and bias == "BEARISH":
-            if ol <= bid <= oh:
-                hit.append("HTF Bearish Bias")
-                hit.append("Price in Bearish OB")
+            if not (ol <= bid <= oh):
+                continue
+            hit.append("HTF Bearish Bias")
+            hit.append("Price in Bearish OB")
 
-                for fvg in fvgs:
-                    if fvg["type"] == "BEARISH_FVG" and fvg["bottom"] <= oh and fvg["top"] >= ol:
-                        hit.append(f"Bearish FVG ({fvg['size_pips']} pips)")
-                        break
-                else:
-                    miss.append("No FVG confluence")
+            # FVG overlap
+            if any(f["type"] == "BEARISH_FVG" and f["bottom"] <= oh and f["top"] >= ol for f in fvgs):
+                hit.append("Bearish FVG overlap")
+            else:
+                miss.append("No FVG confluence")
 
-                for lvl in sr[:6]:
-                    if lvl["type"] == "RESISTANCE" and lvl["dist_pips"] < 20:
-                        hit.append(f"Resistance @ {lvl['price']:.5f}")
-                        break
-                else:
-                    miss.append("No nearby S&R")
+            # S&R proximity
+            near_sr = [v for v in sr[:6] if v["type"] == "RESISTANCE" and v["dist_pips"] < 20]
+            if near_sr:
+                hit.append(f"Resistance @ {near_sr[0]['price']:.5f}")
+            else:
+                miss.append("No nearby S&R")
 
-                if is_kz:
-                    hit.append(f"Kill Zone: {kz_name}")
-                else:
-                    miss.append("Outside kill zone")
+            # Kill Zone
+            if is_kz:
+                hit.append(f"Kill Zone: {kz_name}")
+            else:
+                miss.append("Outside kill zone")
 
-                if len(hit) >= CONFIG["min_confluence"]:
-                    sl = oh + buf
-                    tp = bid - (sl - bid) * CONFIG["min_rr"]
-                    signals.append(_build_signal("SELL", symbol, bid, sl, tp, hit, miss, ob, is_kz, pip))
-                else:
-                    miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
+            # Silver Bullet
+            if is_sb:
+                hit.append(f"Silver Bullet: {sb_name}")
+            else:
+                miss.append("No Silver Bullet")
+
+            # ICT Macro
+            if is_macro:
+                hit.append(f"ICT Macro: {macro_name}")
+            else:
+                miss.append("No macro window")
+
+            # Premium zone (ideal for shorts)
+            if pd_zone == "PREMIUM":
+                hit.append("Price in Premium zone")
+            elif pd_zone == "DISCOUNT":
+                miss.append("Price in Discount (unfavourable for SELL)")
+            else:
+                miss.append(f"Price at {pd_zone}")
+
+            # Liquidity sweep (BSL swept → bearish)
+            bsl_sweeps = [s for s in sweeps if s["type"] == "BSL_SWEEP" and s["bars_ago"] <= 10]
+            if bsl_sweeps:
+                hit.append(f"BSL swept {bsl_sweeps[0]['bars_ago']} bars ago")
+            else:
+                miss.append("No recent BSL sweep")
+
+            # Turtle Soup SELL
+            if any(t["type"] == "TURTLE_SOUP_SELL" and t["bars_ago"] <= 8 for t in turtle_soups):
+                hit.append("Turtle Soup SELL")
+            else:
+                miss.append("No Turtle Soup")
+
+            # BPR nearby
+            near_bpr = [b for b in bprs if b["bottom"] <= oh and b["top"] >= ol]
+            if near_bpr:
+                hit.append(f"BPR @ {near_bpr[0]['mid']:.5f}")
+            else:
+                miss.append("No BPR")
+
+            # Opening Gap nearby
+            near_gap = [g for g in gaps if g["type"].startswith("BEARISH") and
+                        g["bottom"] <= oh + 10*pip and g["top"] >= ol - 10*pip]
+            if near_gap:
+                hit.append(f"{near_gap[0]['kind']} nearby ({near_gap[0]['size_pips']} pips)")
+            else:
+                miss.append("No opening gap")
+
+            # CISD
+            if cisd:
+                hit.append("CISD bearish confirmed")
+            else:
+                miss.append("No CISD")
+
+            # Power of 3
+            if po3_phase == "DISTRIBUTION":
+                hit.append("AMD: Distribution phase")
+            elif po3_phase == "MANIPULATION":
+                miss.append("AMD: Manipulation phase")
+            else:
+                miss.append(f"AMD: {po3_phase}")
+
+            # BOS confirmed
+            if any(e["type"] == "BOS_BEARISH" for e in bos_choch):
+                hit.append("BOS confirmed bearish")
+            else:
+                miss.append("No BOS")
+
+            # Rejection Block at OB
+            near_rej = [r for r in rej_blocks if r["type"] == "BEARISH_REJECTION" and
+                        r["low"] <= oh and r["high"] >= ol]
+            if near_rej:
+                hit.append(f"Rejection Block ({near_rej[0]['wick_pct']:.0f}% wick)")
+            else:
+                miss.append("No Rejection Block")
+
+            # Propulsion block in direction
+            if any(p["type"] == "BEARISH_PROPULSION" for p in propulsions):
+                hit.append("Bearish Propulsion Block")
+            else:
+                miss.append("No Propulsion Block")
+
+            # IPDA range confluence (price near 20d high)
+            ipda20 = ipda.get("20d", {})
+            if ipda20 and bid >= ipda20.get("high", float("inf")) * 0.999:
+                hit.append("Near IPDA 20d High")
+            else:
+                miss.append("No IPDA confluence")
+
+            # Inducement nearby (cleared)
+            if not inducements:
+                hit.append("Inducement cleared")
+            else:
+                miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
+
+            if len(hit) >= CONFIG["min_confluence"]:
+                sl_price = oh + buf
+                tp_price = bid - (sl_price - bid) * CONFIG["min_rr"]
+                signals.append(_build_signal("SELL", symbol, bid, sl_price, tp_price,
+                                            hit, miss, ob, is_kz, pip))
+            else:
+                miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
 
     return sorted(signals, key=lambda x: len(x["confluence"]["hit"]), reverse=True)
 
@@ -811,24 +1591,74 @@ def bot_loop():
                 time.sleep(30)
                 continue
 
-            # Analyse
-            bias, _, _ = get_market_structure(df_htf)
+            # ── Core analysis ─────────────────────────────────────────────
+            bias, sh, sl = get_market_structure(df_htf)
             state["market_bias"] = bias
 
             obs  = find_order_blocks(df_ltf, bias)
             fvgs = find_fvg(df_ltf)
             sr   = find_sr_levels(df_htf)
 
-            state["ob_count"]  = len(obs)
-            state["fvg_count"] = len(fvgs)
-            sr_cache           = sr
+            # ── Extended ICT/SMC detections ───────────────────────────────
+            breakers    = find_breaker_blocks(df_ltf, obs)
+            bprs        = find_balanced_price_range(fvgs)
+            rej_blocks  = find_rejection_blocks(df_ltf, bias)
+            suspensions = find_suspension_blocks(df_ltf)
+            propulsions = find_propulsion_blocks(df_ltf, bias)
+            vacuums     = find_vacuum_blocks(df_htf)
+            inducements = find_inducement(df_ltf, sh, sl, bias)
+            sweeps      = find_liquidity_sweeps(df_ltf, sh, sl)
+            turtle_soups= find_turtle_soup(df_ltf, sh, sl)
+            bos_choch   = find_bos_choch(sh, sl, bias)
+            cisd        = detect_cisd(df_ltf, bias)
+            pd_zone     = get_premium_discount(sh, sl, float(df_ltf["close"].iloc[-1]))
+            po3_phase   = detect_power_of_3(df_ltf, bias)
+            gaps        = find_opening_gaps(df_ltf)
+            smt_div     = detect_smt_divergence(symbol, df_ltf, bias)
 
-            # Generate signals (now with confluence checklist)
-            sigs = generate_signals(symbol, bias, obs, fvgs, sr)
+            # IPDA uses daily-equivalent bars (HTF is H4 → 6 bars/day)
+            ipda = get_ipda_ranges(df_htf)
+
+            # Time-based filters
+            is_kz, kz_name     = in_kill_zone()
+            is_sb, sb_name     = in_silver_bullet()
+            is_macro, mac_name = in_ict_macro()
+
+            # ── Update shared state counts ─────────────────────────────────
+            state["ob_count"]       = len(obs)
+            state["fvg_count"]      = len(fvgs)
+            state["breaker_count"]  = len(breakers)
+            state["bpr_count"]      = len(bprs)
+            state["sweep_count"]    = len(sweeps)
+            state["pd_zone"]        = pd_zone
+            state["po3_phase"]      = po3_phase
+            state["bos_choch"]      = [e["type"] for e in bos_choch]
+            state["cisd"]           = cisd
+            state["ipda"]           = ipda
+            state["smt_divergence"] = smt_div
+            sr_cache = sr
+
+            # ── Build context dict for signal engine ──────────────────────
+            ctx = {
+                "obs": obs, "fvgs": fvgs, "sr": sr,
+                "sh": sh, "sl": sl,
+                "breakers": breakers, "bprs": bprs,
+                "rej_blocks": rej_blocks, "suspensions": suspensions,
+                "propulsions": propulsions, "vacuums": vacuums,
+                "inducements": inducements, "sweeps": sweeps,
+                "turtle_soups": turtle_soups, "bos_choch": bos_choch,
+                "cisd": cisd, "pd_zone": pd_zone, "ipda": ipda,
+                "gaps": gaps, "po3_phase": po3_phase,
+                "is_kz": is_kz, "kz_name": kz_name,
+                "is_sb": is_sb, "sb_name": sb_name,
+                "is_macro": is_macro, "macro_name": mac_name,
+            }
+
+            # ── Generate signals with full confluence scoring ──────────────
+            sigs = generate_signals(symbol, bias, ctx)
             active_signals = sigs
 
             # Execute — only inside kill zones, take the highest-scored signal
-            is_kz, kz_name = in_kill_zone()
             if sigs:
                 best = sigs[0]
                 if is_kz and best["score"] >= CONFIG["min_confluence"]:
@@ -856,9 +1686,14 @@ def bot_loop():
             state["last_scan"] = datetime.now(timezone.utc).isoformat()
             state["error"]     = None
 
+            sb_str    = f"SB:{sb_name}"      if is_sb    else "SB:—"
+            macro_str = f"MAC:{mac_name}"    if is_macro else "MAC:—"
             log.info(
                 f"Bias:{bias:8s} │ OBs:{len(obs):2d} │ FVGs:{len(fvgs):2d} │ "
-                f"S&R:{len(sr):2d} │ Sigs:{len(sigs):2d} │ KZ:{'✓ '+kz_name if is_kz else '—'}"
+                f"SR:{len(sr):2d} │ BRK:{len(breakers)} │ BPR:{len(bprs)} │ "
+                f"SWP:{len(sweeps)} │ PD:{pd_zone[:3]} │ AMD:{po3_phase[:3]} │ "
+                f"SMT:{'✓' if smt_div else '—'} │ CISD:{'✓' if cisd else '—'} │ "
+                f"KZ:{'✓ '+kz_name if is_kz else '—'} │ {sb_str} │ Sigs:{len(sigs)}"
             )
 
             time.sleep(CONFIG["scan_interval"])
