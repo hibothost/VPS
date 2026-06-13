@@ -1178,14 +1178,14 @@ function render(data) {
   }
 
   renderKillZones(data.kill_zones||[]);
-  renderConfluences(data.ctx_confluences||[], data);
+  renderConfluenceMeter(data.ctx_confluences||[], data);
   renderSR(data.sr_levels||[]);
   renderIPDA(data.ipda||{}, curPrice);
   renderSignals(data.active_signals||[], bias);
   renderTrades(data.open_trades||[]);
 }
 
-function renderConfluences(cfs, data) {
+function renderConfluenceMeter(cfs, data) {
   const scoreEl = document.getElementById("cf-score");
   const barEl   = document.getElementById("cf-bar");
   const gridEl  = document.getElementById("cf-grid");
