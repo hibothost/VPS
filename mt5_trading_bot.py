@@ -484,6 +484,8 @@ def generate_signals(
       +1  Inside Kill Zone
 
     Minimum score == CONFIG["min_confluence"] to produce a signal.
+    
+    Returns signals with detailed confluence breakdown for dashboard.
     """
     tick = get_tick(symbol)
     if tick is None:
@@ -497,64 +499,81 @@ def generate_signals(
 
     for ob in obs[-20:]:
         oh, ol = ob["high"], ob["low"]
-        conf: list[str] = []
+        hit: list[str] = []
+        miss: list[str] = []
 
         # ── BULLISH setup ─────────────────────────────────────
         if ob["type"] == "BULLISH_OB" and bias == "BULLISH":
             if ol <= ask <= oh:
-                conf.append("HTF Bullish Bias")
-                conf.append("Price in Bullish OB")
+                hit.append("HTF Bullish Bias")
+                hit.append("Price in Bullish OB")
 
                 for fvg in fvgs:
                     if fvg["type"] == "BULLISH_FVG" and fvg["bottom"] <= oh and fvg["top"] >= ol:
-                        conf.append(f"Bullish FVG ({fvg['size_pips']} pips)")
+                        hit.append(f"Bullish FVG ({fvg['size_pips']} pips)")
                         break
+                else:
+                    miss.append("No FVG confluence")
 
                 for lvl in sr[:6]:
                     if lvl["type"] == "SUPPORT" and lvl["dist_pips"] < 20:
-                        conf.append(f"Support @ {lvl['price']:.5f}")
+                        hit.append(f"Support @ {lvl['price']:.5f}")
                         break
+                else:
+                    miss.append("No nearby S&R")
 
                 if is_kz:
-                    conf.append(f"Kill Zone: {kz_name}")
+                    hit.append(f"Kill Zone: {kz_name}")
+                else:
+                    miss.append("Outside kill zone")
 
-                if len(conf) >= CONFIG["min_confluence"]:
+                if len(hit) >= CONFIG["min_confluence"]:
                     sl = ol - buf
                     tp = ask + (ask - sl) * CONFIG["min_rr"]
-                    signals.append(_build_signal("BUY", symbol, ask, sl, tp, conf, ob, is_kz, pip))
+                    signals.append(_build_signal("BUY", symbol, ask, sl, tp, hit, miss, ob, is_kz, pip))
+                else:
+                    miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
 
         # ── BEARISH setup ─────────────────────────────────────
         elif ob["type"] == "BEARISH_OB" and bias == "BEARISH":
             if ol <= bid <= oh:
-                conf.append("HTF Bearish Bias")
-                conf.append("Price in Bearish OB")
+                hit.append("HTF Bearish Bias")
+                hit.append("Price in Bearish OB")
 
                 for fvg in fvgs:
                     if fvg["type"] == "BEARISH_FVG" and fvg["bottom"] <= oh and fvg["top"] >= ol:
-                        conf.append(f"Bearish FVG ({fvg['size_pips']} pips)")
+                        hit.append(f"Bearish FVG ({fvg['size_pips']} pips)")
                         break
+                else:
+                    miss.append("No FVG confluence")
 
                 for lvl in sr[:6]:
                     if lvl["type"] == "RESISTANCE" and lvl["dist_pips"] < 20:
-                        conf.append(f"Resistance @ {lvl['price']:.5f}")
+                        hit.append(f"Resistance @ {lvl['price']:.5f}")
                         break
+                else:
+                    miss.append("No nearby S&R")
 
                 if is_kz:
-                    conf.append(f"Kill Zone: {kz_name}")
+                    hit.append(f"Kill Zone: {kz_name}")
+                else:
+                    miss.append("Outside kill zone")
 
-                if len(conf) >= CONFIG["min_confluence"]:
+                if len(hit) >= CONFIG["min_confluence"]:
                     sl = oh + buf
                     tp = bid - (sl - bid) * CONFIG["min_rr"]
-                    signals.append(_build_signal("SELL", symbol, bid, sl, tp, conf, ob, is_kz, pip))
+                    signals.append(_build_signal("SELL", symbol, bid, sl, tp, hit, miss, ob, is_kz, pip))
+                else:
+                    miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
 
-    return sorted(signals, key=lambda x: x["score"], reverse=True)
+    return sorted(signals, key=lambda x: len(x["confluence"]["hit"]), reverse=True)
 
 
 def _build_signal(
     direction: str, symbol: str,
     entry: float, sl: float, tp: float,
-    conf: list[str], ob: dict,
-    is_kz: bool, pip: float,
+    hit: list[str], miss: list[str],
+    ob: dict, is_kz: bool, pip: float,
 ) -> dict:
     return {
         "id":         f"{direction}_{int(time.time())}",
@@ -565,8 +584,11 @@ def _build_signal(
         "tp":         round(tp, 5),
         "risk_pips":  round(abs(entry - sl) / pip, 1),
         "rr":         CONFIG["min_rr"],
-        "score":      len(conf),
-        "confluence": conf,
+        "score":      len(hit),
+        "confluence": {
+            "hit":  hit,
+            "miss": miss,
+        },
         "ob":         ob,
         "in_kz":      is_kz,
         "time":       datetime.now(timezone.utc).isoformat(),
@@ -686,7 +708,18 @@ def place_order(sig: dict) -> dict | None:
         "confluence": sig["confluence"],
     }
     trade_history.append(trade)
-    log.info(f"✅ {sig['direction']} {symbol} @ {price:.5f} | SL {sig['sl']:.5f} | TP {sig['tp']:.5f} | {lots} lots")
+    
+    # ── TERMINAL: Show executed trade with confluence checklist ──
+    print(f"\n  ✅ TRADE EXECUTED")
+    print(f"     {sig['direction']:4s} {symbol} @ {price:.5f}")
+    print(f"     SL: {sig['sl']:.5f} | TP: {sig['tp']:.5f} | {lots} lots")
+    print(f"     Confluence ({len(sig['confluence']['hit'])}/{len(sig['confluence']['hit'])+len(sig['confluence']['miss'])}):")
+    for item in sig["confluence"]["hit"]:
+        print(f"       ✓ {item}")
+    for item in sig["confluence"]["miss"]:
+        print(f"       ✗ {item}")
+    print()
+    
     return trade
 
 
@@ -790,7 +823,7 @@ def bot_loop():
             state["fvg_count"] = len(fvgs)
             sr_cache           = sr
 
-            # Generate signals
+            # Generate signals (now with confluence checklist)
             sigs = generate_signals(symbol, bias, obs, fvgs, sr)
             active_signals = sigs
 
@@ -905,13 +938,14 @@ def api_config():
     if request.method == "POST":
         data = request.get_json(force=True)
         editable = ["risk_pct", "min_rr", "max_trades", "symbol",
-                    "scan_interval", "min_confluence", "fvg_min_pips"]
+                    "scan_interval", "min_confluence", "fvg_min_pips",
+                    "active_strategies"]
         for k in editable:
             if k in data:
                 CONFIG[k] = data[k]
         if "symbol" in data and state["connected"]:
             mt5.symbol_select(CONFIG["symbol"], True)
-        return jsonify({"message": "Config updated", "config": {k: CONFIG[k] for k in editable}})
+        return jsonify({"message": "Config updated", "config": {k: CONFIG[k] for k in editable if k in CONFIG}})
     safe = {k: v for k, v in CONFIG.items() if k not in ("password",)}
     return jsonify(safe)
 
