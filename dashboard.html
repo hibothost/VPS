@@ -203,6 +203,27 @@
   .kz-badge.active   { background: rgba(0,217,126,.12); color: var(--g); animation: blink 1.5s infinite; }
   .kz-badge.inactive { color: var(--dim); }
 
+  /* CONFLUENCE METER */
+  .cf-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .cf-score { font-size: 18px; font-weight: 800; color: var(--g); line-height: 1; }
+  .cf-score.low  { color: var(--r); }
+  .cf-score.mid  { color: var(--a); }
+  .cf-score.high { color: var(--g); }
+  .cf-label { font-size: 8px; color: var(--dim); margin-top: 1px; }
+  .cf-bar-wrap { height: 4px; background: var(--border); border-radius: 2px; margin-bottom: 8px; overflow: hidden; }
+  .cf-bar { height: 100%; border-radius: 2px; transition: width .6s ease, background .6s ease; }
+  .cf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+  .cf-pill { display: flex; align-items: center; gap: 4px; padding: 3px 5px; border-radius: 3px; border: 1px solid var(--border); transition: all .3s; }
+  .cf-pill.on  { border-color: rgba(0,217,126,.25); background: rgba(0,217,126,.05); }
+  .cf-pill.off { opacity: .4; }
+  .cf-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .cf-pill.on  .cf-dot { background: var(--g); }
+  .cf-pill.off .cf-dot { background: var(--dim); }
+  .cf-pname { font-size: 8px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .cf-pill.on .cf-pname { color: var(--fg); }
+  .cf-phint { font-size: 7px; color: var(--dim); white-space: nowrap; }
+  .cf-pill.on .cf-phint { color: var(--g); }
+
   /* SETTINGS */
   .set-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(23,23,40,.8); }
   .set-row:last-child { border-bottom: none; }
@@ -425,6 +446,22 @@
     <div class="ps">
       <div class="sec-hdr">KILL ZONES</div>
       <div id="kz-list"></div>
+    </div>
+
+    <!-- CONFLUENCE METER -->
+    <div class="ps">
+      <div class="sec-hdr">CONFLUENCE METER</div>
+      <div class="cf-header">
+        <div>
+          <div class="cf-score low" id="cf-score">0<span style="font-size:10px;font-weight:400;color:var(--dim)">/14</span></div>
+          <div class="cf-label">factors in coincidence</div>
+        </div>
+        <div id="cf-readiness" style="font-size:9px;color:var(--dim);text-align:right">Connect bot<br>to view</div>
+      </div>
+      <div class="cf-bar-wrap"><div class="cf-bar" id="cf-bar" style="width:0%;background:var(--r)"></div></div>
+      <div class="cf-grid" id="cf-grid">
+        <div style="color:var(--dim);font-size:9px;grid-column:span 2">Waiting for bot data…</div>
+      </div>
     </div>
 
     <!-- RISK SETTINGS -->
@@ -1132,10 +1169,34 @@ function render(data) {
   }
 
   renderKillZones(data.kill_zones||[]);
+  renderConfluences(data.ctx_confluences||[]);
   renderSR(data.sr_levels||[]);
   renderIPDA(data.ipda||{}, curPrice);
   renderSignals(data.active_signals||[], bias);
   renderTrades(data.open_trades||[]);
+}
+
+function renderConfluences(cfs) {
+  if (!cfs || !cfs.length) return;
+  const total = cfs.length;
+  const active = cfs.filter(c => c.active).length;
+  const pct = Math.round((active / total) * 100);
+  const cls = active >= 8 ? "high" : active >= 4 ? "mid" : "low";
+  const barCol = active >= 8 ? "var(--g)" : active >= 4 ? "var(--a)" : "var(--r)";
+  const readiness = active >= 8 ? "🟢 HIGH PROBABILITY" : active >= 5 ? "🟡 MODERATE" : active >= 3 ? "🟠 BUILDING" : "🔴 WAITING";
+  const scoreEl = document.getElementById("cf-score");
+  const barEl   = document.getElementById("cf-bar");
+  const gridEl  = document.getElementById("cf-grid");
+  const readEl  = document.getElementById("cf-readiness");
+  if (scoreEl) { scoreEl.className=`cf-score ${cls}`; scoreEl.innerHTML=`${active}<span style="font-size:10px;font-weight:400;color:var(--dim)">/${total}</span>`; }
+  if (barEl)   { barEl.style.width=pct+"%"; barEl.style.background=barCol; }
+  if (readEl)  { readEl.innerHTML=readiness; readEl.style.color=barCol; }
+  if (gridEl)  { gridEl.innerHTML=cfs.map(c=>`
+    <div class="cf-pill ${c.active?"on":"off"}" title="${c.hint||""}">
+      <div class="cf-dot"></div>
+      <span class="cf-pname">${c.name}</span>
+      <span class="cf-phint">${c.active?c.hint||"":""}</span>
+    </div>`).join(""); }
 }
 
 function renderKillZones(kzs) {

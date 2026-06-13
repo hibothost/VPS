@@ -73,6 +73,7 @@ CONFIG = {
     "kill_zones": [
         {"name": "London Open",   "start": 7,  "end": 10},
         {"name": "New York Open", "start": 12, "end": 15},
+        {"name": "London Close",  "start": 15, "end": 17},
     ],
 
     # ── Silver Bullet windows (UTC hours, non-DST / EST+5)
@@ -158,6 +159,7 @@ state = {
     "ipda":           {},
     "smt_divergence": False,
     "current_price":  {},   # {symbol, bid, ask, mid, digits} — updated every scan
+    "ctx_confluences": [],  # [{name, active, hint}] — contextual factors updated each scan
 }
 
 active_signals:  list[dict] = []
@@ -1637,6 +1639,28 @@ def bot_loop():
             state["ipda"]           = ipda
             state["smt_divergence"] = smt_div
             sr_cache = sr
+
+            # ── Contextual confluence meter ────────────────────────────────
+            bias_ok = bias in ("BULLISH", "BEARISH")
+            pd_ok   = (bias == "BULLISH" and pd_zone == "DISCOUNT") or \
+                       (bias == "BEARISH" and pd_zone == "PREMIUM") or \
+                       (pd_zone not in ("UNKNOWN", "EQUILIBRIUM"))
+            state["ctx_confluences"] = [
+                {"name": "Directional Bias",  "active": bias_ok,             "hint": bias if bias_ok else "NEUTRAL"},
+                {"name": "Kill Zone",         "active": is_kz,               "hint": kz_name or "—"},
+                {"name": "Silver Bullet",     "active": is_sb,               "hint": sb_name or "—"},
+                {"name": "ICT Macro",         "active": is_macro,            "hint": mac_name or "—"},
+                {"name": "CISD",              "active": bool(cisd),          "hint": "confirmed" if cisd else "—"},
+                {"name": "P/D Zone",          "active": pd_ok,               "hint": pd_zone},
+                {"name": "AMD Phase",         "active": po3_phase != "UNKNOWN", "hint": po3_phase},
+                {"name": "SMT Divergence",    "active": bool(smt_div),       "hint": "confirmed" if smt_div else "—"},
+                {"name": "Liquidity Sweep",   "active": len(sweeps) > 0,     "hint": f"{len(sweeps)} recent"},
+                {"name": "BOS / CHoCH",       "active": len(bos_choch) > 0,  "hint": bos_choch[0]["type"] if bos_choch else "—"},
+                {"name": "Breaker Block",     "active": len(breakers) > 0,   "hint": f"{len(breakers)} found"},
+                {"name": "Order Block",       "active": len(obs) > 0,        "hint": f"{len(obs)} unmitigated"},
+                {"name": "Fair Value Gap",    "active": len(fvgs) > 0,       "hint": f"{len(fvgs)} gaps"},
+                {"name": "BPR",               "active": len(bprs) > 0,       "hint": f"{len(bprs)} found"},
+            ]
 
             # ── Build context dict for signal engine ──────────────────────
             ctx = {
