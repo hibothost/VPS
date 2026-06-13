@@ -354,8 +354,9 @@
           <span style="color:var(--g);font-size:9px" id="sym-active-lbl">EURUSD</span>
         </div>
       </div>
-      <input id="sym-search" class="sym-search" placeholder="🔍 Search…" oninput="filterSymbols(this.value)" autocomplete="off"/>
-      <div id="sym-picker"></div>
+            <select id="sym-picker" class="sym-search" onchange="selectSymbol(this.value)">
+        <option disabled>Loading...</option>
+      </select>
     </div>
 
     <!-- STRATEGIES -->
