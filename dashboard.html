@@ -1169,33 +1169,73 @@ function render(data) {
   }
 
   renderKillZones(data.kill_zones||[]);
-  renderConfluences(data.ctx_confluences||[]);
+  renderConfluences(data.ctx_confluences||[], data);
   renderSR(data.sr_levels||[]);
   renderIPDA(data.ipda||{}, curPrice);
   renderSignals(data.active_signals||[], bias);
   renderTrades(data.open_trades||[]);
 }
 
-function renderConfluences(cfs) {
-  if (!cfs || !cfs.length) return;
-  const total = cfs.length;
-  const active = cfs.filter(c => c.active).length;
-  const pct = Math.round((active / total) * 100);
-  const cls = active >= 8 ? "high" : active >= 4 ? "mid" : "low";
-  const barCol = active >= 8 ? "var(--g)" : active >= 4 ? "var(--a)" : "var(--r)";
-  const readiness = active >= 8 ? "🟢 HIGH PROBABILITY" : active >= 5 ? "🟡 MODERATE" : active >= 3 ? "🟠 BUILDING" : "🔴 WAITING";
+function renderConfluences(cfs, data) {
   const scoreEl = document.getElementById("cf-score");
   const barEl   = document.getElementById("cf-bar");
   const gridEl  = document.getElementById("cf-grid");
   const readEl  = document.getElementById("cf-readiness");
+
+  // If bot provides pre-computed list use it; otherwise build client-side
+  // from fields already present in every /api/status response
+  let factors;
+  if (cfs && cfs.length) {
+    factors = cfs;
+  } else if (data && (data.market_bias || data.ob_count != null)) {
+    const bias    = data.market_bias || "NEUTRAL";
+    const biasOk  = bias === "BULLISH" || bias === "BEARISH";
+    const pdZone  = data.pd_zone  || "UNKNOWN";
+    const phase   = data.po3_phase || "UNKNOWN";
+    const kzActive= (data.kill_zones||[]).some(k => k.active);
+    const kzName  = ((data.kill_zones||[]).find(k=>k.active)||{}).name || "—";
+    const pdOk    = (bias==="BULLISH" && pdZone==="DISCOUNT") ||
+                    (bias==="BEARISH" && pdZone==="PREMIUM")  ||
+                    (pdZone !== "UNKNOWN" && pdZone !== "EQUILIBRIUM");
+    const bosList = data.bos_choch || [];
+    factors = [
+      {name:"Directional Bias", active: biasOk,                   hint: biasOk ? bias : "NEUTRAL"},
+      {name:"Kill Zone",        active: kzActive,                  hint: kzActive ? kzName : "—"},
+      {name:"Silver Bullet",    active: !!(data.is_sb),            hint: data.sb_name || "—"},
+      {name:"ICT Macro",        active: !!(data.is_macro),         hint: data.macro_name || "—"},
+      {name:"CISD",             active: !!(data.cisd),             hint: data.cisd ? "confirmed" : "—"},
+      {name:"P/D Zone",         active: pdOk,                      hint: pdZone},
+      {name:"AMD Phase",        active: phase !== "UNKNOWN",       hint: phase},
+      {name:"SMT Divergence",   active: !!(data.smt_divergence),   hint: data.smt_divergence ? "confirmed" : "—"},
+      {name:"Liquidity Sweep",  active: (data.sweep_count||0) > 0, hint: (data.sweep_count||0)+" recent"},
+      {name:"BOS / CHoCH",      active: bosList.length > 0,        hint: bosList[0] || "—"},
+      {name:"Breaker Block",    active: (data.breaker_count||0)>0, hint: (data.breaker_count||0)+" found"},
+      {name:"Order Block",      active: (data.ob_count||0) > 0,    hint: (data.ob_count||0)+" OBs"},
+      {name:"Fair Value Gap",   active: (data.fvg_count||0) > 0,   hint: (data.fvg_count||0)+" gaps"},
+      {name:"BPR",              active: (data.bpr_count||0) > 0,   hint: (data.bpr_count||0)+" found"},
+    ];
+  } else {
+    return; // no data at all yet
+  }
+
+  const total  = factors.length;
+  const active = factors.filter(c => c.active).length;
+  const pct    = Math.round((active / total) * 100);
+  const cls    = active >= 8 ? "high" : active >= 4 ? "mid" : "low";
+  const barCol = active >= 8 ? "var(--g)" : active >= 4 ? "var(--a)" : "var(--r)";
+  const readiness = active >= 8 ? "🟢 HIGH PROBABILITY"
+                  : active >= 5 ? "🟡 MODERATE"
+                  : active >= 3 ? "🟠 BUILDING"
+                  :               "🔴 WAITING";
+
   if (scoreEl) { scoreEl.className=`cf-score ${cls}`; scoreEl.innerHTML=`${active}<span style="font-size:10px;font-weight:400;color:var(--dim)">/${total}</span>`; }
   if (barEl)   { barEl.style.width=pct+"%"; barEl.style.background=barCol; }
   if (readEl)  { readEl.innerHTML=readiness; readEl.style.color=barCol; }
-  if (gridEl)  { gridEl.innerHTML=cfs.map(c=>`
+  if (gridEl)  { gridEl.innerHTML=factors.map(c=>`
     <div class="cf-pill ${c.active?"on":"off"}" title="${c.hint||""}">
       <div class="cf-dot"></div>
       <span class="cf-pname">${c.name}</span>
-      <span class="cf-phint">${c.active?c.hint||"":""}</span>
+      <span class="cf-phint">${c.active ? c.hint||"" : ""}</span>
     </div>`).join(""); }
 }
 
