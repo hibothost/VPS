@@ -1196,7 +1196,7 @@ function renderConfluences(cfs, data) {
   let factors;
   if (cfs && cfs.length) {
     factors = cfs;
-  } else if (data && (data.market_bias || data.ob_count != null)) {
+  } else if (data && data.connected !== undefined) {
     const bias    = data.market_bias || "NEUTRAL";
     const biasOk  = bias === "BULLISH" || bias === "BEARISH";
     const pdZone  = data.pd_zone  || "UNKNOWN";
