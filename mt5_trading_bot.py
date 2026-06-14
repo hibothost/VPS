@@ -69,6 +69,11 @@ CONFIG = {
     "sl_buffer_pips":   5.0,    # Buffer pips beyond OB for SL
     "min_confluence":   3,      # Min confluence score to execute
 
+    # ── Trade monitoring & dynamic exit
+    "bias_exit":       True,   # Close trade if HTF bias reverses
+    "bos_exit":        True,   # Close trade on BOS/CHoCH against direction
+    "trail_be_pips":   20,     # Move SL to break-even once X pips in profit (0 = off)
+
     # ── Kill zones (UTC hours) — bot only trades inside these windows
     "kill_zones": [
         {"name": "London Open",   "start": 7,  "end": 10},
@@ -166,6 +171,113 @@ active_signals:  list[dict] = []
 open_trades:     list[dict] = []
 trade_history:   list[dict] = []
 sr_cache:        list[dict] = []
+
+# ── Persistent trade log ───────────────────────────────────────────
+TRADE_LOG_FILE  = "trade_log.json"
+EQUITY_LOG_FILE = "equity_log.json"
+_prev_open_tickets: set = set()   # track ticket IDs to detect closures
+
+
+def _load_json(path: str, default):
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def _save_json(path: str, data):
+    try:
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception as e:
+        log.error(f"Failed to save {path}: {e}")
+
+
+# Load persisted data on startup
+persistent_trade_log: list[dict] = _load_json(TRADE_LOG_FILE, [])
+persistent_equity_log: list[dict] = _load_json(EQUITY_LOG_FILE, [])
+
+# Seed in-memory history from persisted log
+trade_history = [t for t in persistent_trade_log]
+
+
+def record_trade_open(trade: dict, ctx: dict, bias: str, sig: dict):
+    """Append a full ML-context record when a trade opens."""
+    global persistent_trade_log
+    ml_record = {
+        **trade,
+        "status":      "OPEN",
+        "close_price": None,
+        "close_time":  None,
+        "pips":        None,
+        "exit_reason": None,
+        "ml_context": {
+            "bias":             bias,
+            "pd_zone":          ctx.get("pd_zone", "UNKNOWN"),
+            "po3_phase":        ctx.get("po3_phase", "UNKNOWN"),
+            "cisd":             ctx.get("cisd", False),
+            "smt_divergence":   bool(ctx.get("smt_divergence", False)),
+            "bos_choch":        [b["type"] for b in ctx.get("bos_choch", [])],
+            "ob_count":         len(ctx.get("obs", [])),
+            "fvg_count":        len(ctx.get("fvgs", [])),
+            "sweep_count":      len(ctx.get("sweeps", [])),
+            "breaker_count":    len(ctx.get("breakers", [])),
+            "bpr_count":        len(ctx.get("bprs", [])),
+            "is_kz":            ctx.get("is_kz", False),
+            "kz_name":          ctx.get("kz_name"),
+            "is_sb":            ctx.get("is_sb", False),
+            "is_macro":         ctx.get("is_macro", False),
+            "confluence_score": sig.get("score", 0),
+            "confluence_hit":   sig.get("confluence", {}).get("hit", []),
+            "confluence_miss":  sig.get("confluence", {}).get("miss", []),
+        },
+    }
+    persistent_trade_log.append(ml_record)
+    _save_json(TRADE_LOG_FILE, persistent_trade_log)
+
+
+def record_trade_close(ticket: int, close_price: float, pnl: float, reason: str):
+    """Update the persisted record when a trade is closed."""
+    global persistent_trade_log
+    pip = get_pip_size(CONFIG["symbol"])
+    for rec in persistent_trade_log:
+        if rec.get("ticket") == ticket and rec.get("status") == "OPEN":
+            rec["status"]      = "CLOSED"
+            rec["close_price"] = round(close_price, 5)
+            rec["close_time"]  = datetime.now(timezone.utc).isoformat()
+            rec["pnl"]         = round(pnl, 2)
+            rec["exit_reason"] = reason
+            if rec["direction"] == "BUY":
+                rec["pips"] = round((close_price - rec["entry"]) / pip, 1)
+            else:
+                rec["pips"] = round((rec["entry"] - close_price) / pip, 1)
+            break
+    _save_json(TRADE_LOG_FILE, persistent_trade_log)
+    # Mirror to in-memory list
+    for t in trade_history:
+        if t.get("ticket") == ticket:
+            t["status"]      = "CLOSED"
+            t["pnl"]         = round(pnl, 2)
+            t["close_price"] = round(close_price, 5)
+            t["exit_reason"] = reason
+            break
+
+
+def _query_mt5_close(ticket: int):
+    """Query MT5 deal history to get close details after TP/SL/manual close."""
+    try:
+        deals = mt5.history_deals_get(position=ticket) or []
+        close_deals = [d for d in deals if d.entry == 1]  # entry=1 = close
+        if not close_deals:
+            return None, 0.0, "Closed"
+        d = close_deals[-1]
+        total_pnl = sum(dd.profit + dd.swap + dd.commission for dd in deals)
+        reason_map = {3: "TP hit", 4: "SL hit", 0: "Manual close", 2: "Stop-out"}
+        reason = reason_map.get(d.reason, f"Closed (reason {d.reason})")
+        return d.price, round(total_pnl, 2), reason
+    except Exception:
+        return None, 0.0, "Closed"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1490,6 +1602,8 @@ def place_order(sig: dict) -> dict | None:
         "confluence": sig["confluence"],
     }
     trade_history.append(trade)
+    # Persist with full ML context (ctx injected by bot_loop via sig)
+    record_trade_open(trade, sig.get("_ctx", {}), sig.get("_bias", "NEUTRAL"), sig)
     
     # ── TERMINAL: Show executed trade with confluence checklist ──
     print(f"\n  ✅ TRADE EXECUTED")
@@ -1535,26 +1649,110 @@ def close_position(ticket: int) -> bool:
 #  REFRESH OPEN TRADES FROM MT5
 # ══════════════════════════════════════════════════════════════
 
-def refresh_open_trades():
-    global open_trades
+def _modify_sl(ticket: int, symbol: str, new_sl: float):
+    """Modify the stop-loss of an open position."""
+    info = mt5.symbol_info(symbol)
+    digits = info.digits if info else 5
+    req = {
+        "action":   mt5.TRADE_ACTION_SLTP,
+        "position": ticket,
+        "symbol":   symbol,
+        "sl":       round(new_sl, digits),
+    }
+    mt5.order_send(req)
+
+
+def monitor_open_trades(ctx: dict, bias: str):
+    """
+    Check each open bot trade for dynamic exit conditions:
+      1. HTF bias reversal
+      2. BOS / CHoCH against trade direction
+      3. Trail SL to break-even once profit >= trail_be_pips
+    """
+    global _prev_open_tickets
     positions = mt5.positions_get() or []
+    bot_pos   = [p for p in positions if p.magic == CONFIG["magic_number"]]
+    bos_choch = ctx.get("bos_choch", [])
+
+    for p in bot_pos:
+        direction = "BUY" if p.type == 0 else "SELL"
+        ticket    = p.ticket
+        pip       = get_pip_size(p.symbol)
+        profit_pips = ((p.price_current - p.price_open) / pip
+                       if direction == "BUY"
+                       else (p.price_open - p.price_current) / pip)
+        exit_reason = None
+
+        # ── 1. Bias reversal exit ──────────────────────────────────
+        if CONFIG.get("bias_exit", True):
+            if direction == "BUY"  and bias == "BEARISH":
+                exit_reason = "Bias reversed to BEARISH"
+            elif direction == "SELL" and bias == "BULLISH":
+                exit_reason = "Bias reversed to BULLISH"
+
+        # ── 2. BOS / CHoCH structural break against position ──────
+        if not exit_reason and CONFIG.get("bos_exit", True):
+            if direction == "BUY":
+                if any(b["type"] in ("BEARISH_BOS", "BEARISH_CHOCH") for b in bos_choch):
+                    exit_reason = "Bearish BOS/CHoCH — structure broken"
+            else:
+                if any(b["type"] in ("BULLISH_BOS", "BULLISH_CHOCH") for b in bos_choch):
+                    exit_reason = "Bullish BOS/CHoCH — structure broken"
+
+        # ── 3. Trail to break-even ────────────────────────────────
+        trail_be = CONFIG.get("trail_be_pips", 0)
+        if trail_be > 0 and profit_pips >= trail_be:
+            be_price = round(p.price_open, mt5.symbol_info(p.symbol).digits if mt5.symbol_info(p.symbol) else 5)
+            if direction == "BUY"  and (p.sl == 0 or p.sl < be_price):
+                _modify_sl(ticket, p.symbol, be_price)
+                log.info(f"Trail BE: moved SL → {be_price:.5f} on #{ticket}")
+            elif direction == "SELL" and (p.sl == 0 or p.sl > be_price):
+                _modify_sl(ticket, p.symbol, be_price)
+                log.info(f"Trail BE: moved SL → {be_price:.5f} on #{ticket}")
+
+        # ── Auto-close if exit condition met ─────────────────────
+        if exit_reason:
+            log.info(f"⚡ Auto-close #{ticket} ({direction} {p.symbol}): {exit_reason}")
+            tick = get_tick(p.symbol)
+            close_px = (tick.bid if p.type == 0 else tick.ask) if tick else p.price_current
+            if close_position(ticket):
+                record_trade_close(ticket, close_px, p.profit, f"Bot: {exit_reason}")
+                log.info(f"  ✓ Closed #{ticket} | PnL: {p.profit:.2f}")
+            else:
+                log.error(f"  ✗ Failed to close #{ticket}")
+
+
+def refresh_open_trades():
+    global open_trades, _prev_open_tickets
+    positions   = mt5.positions_get() or []
+    bot_pos_map = {p.ticket: p for p in positions if p.magic == CONFIG["magic_number"]}
+    cur_tickets = set(bot_pos_map.keys())
+
+    # Detect trades that were open last cycle but are now gone (TP/SL/manual)
+    closed_tickets = _prev_open_tickets - cur_tickets
+    for ticket in closed_tickets:
+        close_px, pnl, reason = _query_mt5_close(ticket)
+        if close_px is not None:
+            record_trade_close(ticket, close_px, pnl, reason)
+            log.info(f"📋 Trade #{ticket} recorded as CLOSED — {reason} | PnL: {pnl:.2f}")
+
+    _prev_open_tickets = cur_tickets
     open_trades = [
         {
-            "ticket":    p.ticket,
-            "symbol":    p.symbol,
-            "direction": "BUY" if p.type == 0 else "SELL",
-            "entry":     round(p.price_open, 5),
-            "current":   round(p.price_current, 5),
-            "sl":        round(p.sl, 5),
-            "tp":        round(p.tp, 5),
-            "lots":      p.volume,
-            "pnl":       round(p.profit, 2),
-            "swap":      round(p.swap, 2),
-            "time":      datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
-            "comment":   p.comment,
+            "ticket":       p.ticket,
+            "symbol":       p.symbol,
+            "direction":    "BUY" if p.type == 0 else "SELL",
+            "entry":        round(p.price_open, 5),
+            "current":      round(p.price_current, 5),
+            "sl":           round(p.sl, 5),
+            "tp":           round(p.tp, 5),
+            "lots":         p.volume,
+            "pnl":          round(p.profit, 2),
+            "swap":         round(p.swap, 2),
+            "time":         datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
+            "comment":      p.comment,
         }
-        for p in positions
-        if p.magic == CONFIG["magic_number"]
+        for p in bot_pos_map.values()
     ]
 
 
@@ -1678,6 +1876,9 @@ def bot_loop():
                 "is_macro": is_macro, "macro_name": mac_name,
             }
 
+            # ── Monitor open trades — dynamic exit / trailing BE ──────────
+            monitor_open_trades(ctx, bias)
+
             # ── Generate signals with full confluence scoring ──────────────
             sigs = generate_signals(symbol, bias, ctx)
             active_signals = sigs
@@ -1686,12 +1887,15 @@ def bot_loop():
             if sigs:
                 best = sigs[0]
                 if is_kz and best["score"] >= CONFIG["min_confluence"]:
+                    # Inject context for ML record-keeping
+                    best["_ctx"]  = ctx
+                    best["_bias"] = bias
                     place_order(best)
                 else:
                     reason = "outside kill zone" if not is_kz else f"score {best['score']} < {CONFIG['min_confluence']}"
                     log.info(f"Signal queued ({reason}): {best['direction']} {symbol}")
 
-            # Refresh open positions
+            # Refresh open positions (also detects TP/SL closures)
             refresh_open_trades()
 
             # Cache live price so dashboard ticker stays current on any symbol
@@ -1768,6 +1972,37 @@ def api_status():
 @app.route("/api/history")
 def api_history():
     return jsonify({"trades": trade_history[-100:]})
+
+
+@app.route("/api/trade-log")
+def api_trade_log():
+    """Full persisted trade log — all trades with ML context."""
+    return jsonify({"trades": persistent_trade_log})
+
+
+@app.route("/api/export-csv")
+def api_export_csv():
+    """Download all trades as CSV for ML / spreadsheet analysis."""
+    import io, csv as csv_mod
+    fields = ["ticket","symbol","direction","entry","close_price","sl","tp",
+              "lots","pnl","pips","status","exit_reason","time","close_time"]
+    ml_fields = ["bias","pd_zone","po3_phase","cisd","smt_divergence",
+                 "ob_count","fvg_count","sweep_count","breaker_count",
+                 "bpr_count","is_kz","kz_name","confluence_score"]
+    buf = io.StringIO()
+    w = csv_mod.writer(buf)
+    w.writerow(fields + ml_fields)
+    for t in persistent_trade_log:
+        ml = t.get("ml_context", {})
+        row = [t.get(f, "") for f in fields] + [ml.get(f, "") for f in ml_fields]
+        w.writerow(row)
+    buf.seek(0)
+    from flask import Response
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=trade_log.csv"},
+    )
 
 
 @app.route("/api/equity")
