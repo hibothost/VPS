@@ -58,7 +58,7 @@ CONFIG = {
     # ── Risk management
     "risk_pct":     10.0,        # % of balance risked per trade
     "min_rr":       4.0,        # Minimum Risk : Reward ratio
-    "max_spread":   50,         # Max allowed spread in points
+    "max_spread":   5000,         # Max allowed spread in points
     "max_trades":   2,          # Max concurrent bot trades
 
     # ── Strategy parameters
