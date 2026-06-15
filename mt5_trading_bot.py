@@ -83,8 +83,9 @@ CONFIG = {
         {"name": "London Close",     "start": 15, "end": 17},
     ],
 
-    # ── Kill zone gate — set False to allow entries outside kill zones
-    "require_kill_zone": True,
+    # ── Kill zone gate — False = execute any time confluence is met (default)
+    #    True  = only execute inside a kill zone window
+    "require_kill_zone": False,
 
     # ── Silver Bullet windows (UTC hours, non-DST / EST+5)
     "silver_bullet_windows": [
