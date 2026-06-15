@@ -53,6 +53,8 @@
   .btn-start { border-color: var(--g); background: rgba(0,217,126,.12); color: var(--g); }
   .btn-stop  { border-color: var(--r); background: rgba(255,69,96,.12);  color: var(--r); }
   .btn-dim   { border-color: var(--border); background: var(--card); color: var(--muted); }
+  .btn-algo-on  { border-color: var(--g); background: rgba(0,217,126,.18); color: var(--g); }
+  .btn-algo-off { border-color: #ff6b35; background: rgba(255,107,53,.14); color: #ff6b35; }
 
   /* STATS BAR */
   #stats-bar {
@@ -357,6 +359,7 @@
     <span class="badge badge-demo" id="conn-badge">DEMO</span>
     <button class="btn btn-dim" id="reconnect-btn" onclick="reconnect()" style="display:none">↺ RECONNECT</button>
     <button class="btn btn-dim" onclick="changeServerUrl()">🔗 SERVER</button>
+    <button class="btn btn-algo-on" id="algo-btn" onclick="toggleAlgoTrade()" title="Toggle automatic trade execution">⚡ ALGO ON</button>
     <button class="btn btn-start" id="toggle-btn" onclick="toggleBot()">▶ START</button>
   </div>
 </div>
@@ -535,6 +538,7 @@ let BASE        = localStorage.getItem("botApiUrl") || "";
 if (!BASE && window.location.protocol === "file:") BASE = "http://localhost:5000";
 
 let botRunning   = false;
+let autoTrade    = true;
 let isLive       = false;
 let equityChart  = null;
 let equityCurve  = [];
@@ -1053,7 +1057,15 @@ async function fetchEquity() {
 // ── RENDER ────────────────────────────────────────────────────────
 function render(data) {
   botRunning = data.running;
+  autoTrade  = data.auto_trade !== undefined ? data.auto_trade : autoTrade;
   const bias = data.market_bias||"NEUTRAL";
+
+  const ab = document.getElementById("algo-btn");
+  if (ab) {
+    ab.className   = "btn " + (autoTrade ? "btn-algo-on" : "btn-algo-off");
+    ab.textContent = autoTrade ? "⚡ ALGO ON" : "⚡ ALGO OFF";
+    ab.title       = autoTrade ? "Algo trading active — click to pause" : "Algo trading paused — click to enable";
+  }
   const acct = data.account||{};
   const wins = tradeHistory.filter(t=>t.pnl>0).length;
   const wr   = tradeHistory.length ? Math.round(wins/tradeHistory.length*100) : 0;
@@ -1600,6 +1612,18 @@ function switchTab(name,el) {
 async function toggleBot() {
   try { await fetch(BASE+(botRunning?"/api/stop":"/api/start"),{method:"POST",signal:AbortSignal.timeout(3000)}); await refresh(); }
   catch { alert("Could not reach bot server."); }
+}
+async function toggleAlgoTrade() {
+  try {
+    const r = await fetch(BASE+"/api/auto_trade",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}",signal:AbortSignal.timeout(3000)});
+    const d = await r.json();
+    autoTrade = d.auto_trade;
+    const ab = document.getElementById("algo-btn");
+    if (ab) {
+      ab.className   = "btn " + (autoTrade ? "btn-algo-on" : "btn-algo-off");
+      ab.textContent = autoTrade ? "⚡ ALGO ON" : "⚡ ALGO OFF";
+    }
+  } catch { alert("Could not reach bot server."); }
 }
 async function closeTrade(ticket) {
   if (!confirm("Close trade #"+ticket+"?")) return;

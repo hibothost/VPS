@@ -159,6 +159,7 @@ log = logging.getLogger("ICT_Bot")
 
 state = {
     "running":        False,
+    "auto_trade":     True,   # persisted — survives restarts
     "connected":      False,
     "market_bias":    "NEUTRAL",
     "last_scan":      None,
@@ -207,9 +208,22 @@ def _save_json(path: str, data):
         log.error(f"Failed to save {path}: {e}")
 
 
+# ── Algo-trading state persistence ────────────────────────────────────
+AUTO_TRADE_FILE = "auto_trade.json"
+
+def _load_auto_trade():
+    data = _load_json(AUTO_TRADE_FILE, {"auto_trade": True})
+    return bool(data.get("auto_trade", True))
+
+def _save_auto_trade(value: bool):
+    _save_json(AUTO_TRADE_FILE, {"auto_trade": value})
+
 # Load persisted data on startup
 persistent_trade_log: list[dict] = _load_json(TRADE_LOG_FILE, [])
 persistent_equity_log: list[dict] = _load_json(EQUITY_LOG_FILE, [])
+
+# Restore algo-trading state from last session
+state["auto_trade"] = _load_auto_trade()
 
 # Seed in-memory history from persisted log
 trade_history = [t for t in persistent_trade_log]
@@ -1942,11 +1956,13 @@ def bot_loop():
             sigs = generate_signals(symbol, bias, ctx)
             active_signals = sigs
 
-            # Execute — respect kill-zone gate (configurable) and min confluence
+            # Execute — respect kill-zone gate, min confluence, and algo-trade toggle
             if sigs:
                 best = sigs[0]
-                kz_ok = (not CONFIG.get("require_kill_zone", True)) or is_kz
-                if kz_ok and best["score"] >= CONFIG["min_confluence"]:
+                kz_ok = (not CONFIG.get("require_kill_zone", False)) or is_kz
+                if not state.get("auto_trade", True):
+                    log.info(f"Algo trading OFF — signal not executed: {best['direction']} {symbol}")
+                elif kz_ok and best["score"] >= CONFIG["min_confluence"]:
                     # Inject context for ML record-keeping
                     best["_ctx"]  = ctx
                     best["_bias"] = bias
@@ -2014,7 +2030,7 @@ def index():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "connected": state["connected"], "running": state["running"]})
+    return jsonify({"status": "ok", "connected": state["connected"], "running": state["running"], "auto_trade": state["auto_trade"]})
 
 
 @app.route("/api/status")
@@ -2085,6 +2101,20 @@ def api_start():
 def api_stop():
     state["running"] = False
     return jsonify({"message": "Bot stopping…"})
+
+
+@app.route("/api/auto_trade", methods=["POST"])
+def api_auto_trade():
+    """Toggle or explicitly set algo-trading execution. Persists across restarts."""
+    data = request.get_json(force=True) or {}
+    if "enabled" in data:
+        state["auto_trade"] = bool(data["enabled"])
+    else:
+        state["auto_trade"] = not state.get("auto_trade", True)
+    _save_auto_trade(state["auto_trade"])
+    status = "ON" if state["auto_trade"] else "OFF"
+    log.info(f"⚡ Algo trading turned {status} from dashboard")
+    return jsonify({"auto_trade": state["auto_trade"], "message": f"Algo trading {status}"})
 
 
 @app.route("/api/config", methods=["GET", "POST"])
