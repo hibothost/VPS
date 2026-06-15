@@ -73,13 +73,18 @@ CONFIG = {
     "bias_exit":       True,   # Close trade if HTF bias reverses
     "bos_exit":        True,   # Close trade on BOS/CHoCH against direction
     "trail_be_pips":   20,     # Move SL to break-even once X pips in profit (0 = off)
+    "trail_be_buffer_pips": 2, # Extra pips of room beyond entry for the BE stop (avoids closing on re-touch)
 
-    # ── Kill zones (UTC hours) — bot only trades inside these windows
+    # ── Kill zones (UTC hours) — 4 standard ICT kill zones
     "kill_zones": [
-        {"name": "London Open",   "start": 7,  "end": 10},
-        {"name": "New York Open", "start": 12, "end": 15},
-        {"name": "London Close",  "start": 15, "end": 17},
+        {"name": "Asian Session",    "start": 0,  "end": 3 },
+        {"name": "London Open",      "start": 7,  "end": 10},
+        {"name": "New York AM",      "start": 12, "end": 15},
+        {"name": "London Close",     "start": 15, "end": 17},
     ],
+
+    # ── Kill zone gate — set False to allow entries outside kill zones
+    "require_kill_zone": True,
 
     # ── Silver Bullet windows (UTC hours, non-DST / EST+5)
     "silver_bullet_windows": [
@@ -113,6 +118,13 @@ CONFIG = {
         "XAUUSD": "XAGUSD",  "XAGUSD": "XAUUSD",
         "AUDUSD": "NZDUSD",  "NZDUSD": "AUDUSD",
     },
+
+    # ── Active strategies — controls which checks contribute to confluence score
+    "active_strategies": [
+        "ob","fvg","bos","breaker","liq","pd","bpr","mss","kz","silver",
+        "po3","htf","sr","cisd","ipda","rejblock","propulsion","inducement",
+        "turtle","macros","nwog","ndog",
+    ],
 
     # ── Bot internals
     "scan_interval": 60,        # Seconds between analysis scans
@@ -1173,6 +1185,10 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
     pip = get_pip_size(symbol)
     buf = CONFIG["sl_buffer_pips"] * pip
 
+    # Respect the strategy toggle panel — disabled strategies are skipped entirely
+    # (neither hit nor miss), so the confluence score only reflects active checks.
+    active_strats = set(CONFIG.get("active_strategies", []))
+
     obs          = ctx.get("obs", [])
     fvgs         = ctx.get("fvgs", [])
     sr           = ctx.get("sr", [])
@@ -1210,118 +1226,135 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
             hit.append("Price in Bullish OB")
 
             # FVG overlap
-            if any(f["type"] == "BULLISH_FVG" and f["bottom"] <= oh and f["top"] >= ol for f in fvgs):
-                hit.append("Bullish FVG overlap")
-            else:
-                miss.append("No FVG confluence")
+            if "fvg" in active_strats:
+                if any(f["type"] == "BULLISH_FVG" and f["bottom"] <= oh and f["top"] >= ol for f in fvgs):
+                    hit.append("Bullish FVG overlap")
+                else:
+                    miss.append("No FVG confluence")
 
             # S&R proximity
-            near_sr = [v for v in sr[:6] if v["type"] == "SUPPORT" and v["dist_pips"] < 20]
-            if near_sr:
-                hit.append(f"Support @ {near_sr[0]['price']:.5f}")
-            else:
-                miss.append("No nearby S&R")
+            if "sr" in active_strats:
+                near_sr = [v for v in sr[:6] if v["type"] == "SUPPORT" and v["dist_pips"] < 20]
+                if near_sr:
+                    hit.append(f"Support @ {near_sr[0]['price']:.5f}")
+                else:
+                    miss.append("No nearby S&R")
 
             # Kill Zone
-            if is_kz:
-                hit.append(f"Kill Zone: {kz_name}")
-            else:
-                miss.append("Outside kill zone")
+            if "kz" in active_strats:
+                if is_kz:
+                    hit.append(f"Kill Zone: {kz_name}")
+                else:
+                    miss.append("Outside kill zone")
 
             # Silver Bullet
-            if is_sb:
-                hit.append(f"Silver Bullet: {sb_name}")
-            else:
-                miss.append("No Silver Bullet")
+            if "silver" in active_strats:
+                if is_sb:
+                    hit.append(f"Silver Bullet: {sb_name}")
+                else:
+                    miss.append("No Silver Bullet")
 
             # ICT Macro
-            if is_macro:
-                hit.append(f"ICT Macro: {macro_name}")
-            else:
-                miss.append("No macro window")
+            if "macros" in active_strats:
+                if is_macro:
+                    hit.append(f"ICT Macro: {macro_name}")
+                else:
+                    miss.append("No macro window")
 
             # Discount zone (ideal for longs)
-            if pd_zone == "DISCOUNT":
-                hit.append("Price in Discount zone")
-            elif pd_zone == "PREMIUM":
-                miss.append("Price in Premium (unfavourable for BUY)")
-            else:
-                miss.append(f"Price at {pd_zone}")
+            if "pd" in active_strats:
+                if pd_zone == "DISCOUNT":
+                    hit.append("Price in Discount zone")
+                elif pd_zone == "PREMIUM":
+                    miss.append("Price in Premium (unfavourable for BUY)")
+                else:
+                    miss.append(f"Price at {pd_zone}")
 
             # Liquidity sweep (SSL swept → bullish)
-            ssl_sweeps = [s for s in sweeps if s["type"] == "SSL_SWEEP" and s["bars_ago"] <= 10]
-            if ssl_sweeps:
-                hit.append(f"SSL swept {ssl_sweeps[0]['bars_ago']} bars ago")
-            else:
-                miss.append("No recent SSL sweep")
+            if "liq" in active_strats:
+                ssl_sweeps = [s for s in sweeps if s["type"] == "SSL_SWEEP" and s["bars_ago"] <= 10]
+                if ssl_sweeps:
+                    hit.append(f"SSL swept {ssl_sweeps[0]['bars_ago']} bars ago")
+                else:
+                    miss.append("No recent SSL sweep")
 
             # Turtle Soup BUY
-            if any(t["type"] == "TURTLE_SOUP_BUY" and t["bars_ago"] <= 8 for t in turtle_soups):
-                hit.append("Turtle Soup BUY")
-            else:
-                miss.append("No Turtle Soup")
+            if "turtle" in active_strats:
+                if any(t["type"] == "TURTLE_SOUP_BUY" and t["bars_ago"] <= 8 for t in turtle_soups):
+                    hit.append("Turtle Soup BUY")
+                else:
+                    miss.append("No Turtle Soup")
 
             # BPR nearby
-            near_bpr = [b for b in bprs if b["bottom"] <= oh and b["top"] >= ol]
-            if near_bpr:
-                hit.append(f"BPR @ {near_bpr[0]['mid']:.5f}")
-            else:
-                miss.append("No BPR")
+            if "bpr" in active_strats:
+                near_bpr = [b for b in bprs if b["bottom"] <= oh and b["top"] >= ol]
+                if near_bpr:
+                    hit.append(f"BPR @ {near_bpr[0]['mid']:.5f}")
+                else:
+                    miss.append("No BPR")
 
             # Opening Gap (NWOG/NDOG) nearby
-            near_gap = [g for g in gaps if g["type"].startswith("BULLISH") and
-                        g["bottom"] <= oh + 10*pip and g["top"] >= ol - 10*pip]
-            if near_gap:
-                hit.append(f"{near_gap[0]['kind']} nearby ({near_gap[0]['size_pips']} pips)")
-            else:
-                miss.append("No opening gap")
+            if "nwog" in active_strats or "ndog" in active_strats:
+                near_gap = [g for g in gaps if g["type"].startswith("BULLISH") and
+                            g["bottom"] <= oh + 10*pip and g["top"] >= ol - 10*pip]
+                if near_gap:
+                    hit.append(f"{near_gap[0]['kind']} nearby ({near_gap[0]['size_pips']} pips)")
+                else:
+                    miss.append("No opening gap")
 
             # CISD
-            if cisd:
-                hit.append("CISD bullish confirmed")
-            else:
-                miss.append("No CISD")
+            if "cisd" in active_strats:
+                if cisd:
+                    hit.append("CISD bullish confirmed")
+                else:
+                    miss.append("No CISD")
 
             # Power of 3
-            if po3_phase == "DISTRIBUTION":
-                hit.append("AMD: Distribution phase")
-            elif po3_phase == "MANIPULATION":
-                miss.append("AMD: Manipulation phase")
-            else:
-                miss.append(f"AMD: {po3_phase}")
+            if "po3" in active_strats:
+                if po3_phase == "DISTRIBUTION":
+                    hit.append("AMD: Distribution phase")
+                elif po3_phase == "MANIPULATION":
+                    miss.append("AMD: Manipulation phase")
+                else:
+                    miss.append(f"AMD: {po3_phase}")
 
             # BOS confirmed
-            if any(e["type"] == "BOS_BULLISH" for e in bos_choch):
-                hit.append("BOS confirmed bullish")
-            else:
-                miss.append("No BOS")
+            if "bos" in active_strats:
+                if any(e["type"] == "BOS_BULLISH" for e in bos_choch):
+                    hit.append("BOS confirmed bullish")
+                else:
+                    miss.append("No BOS")
 
             # Rejection Block at OB
-            near_rej = [r for r in rej_blocks if r["type"] == "BULLISH_REJECTION" and
-                        r["low"] <= oh and r["high"] >= ol]
-            if near_rej:
-                hit.append(f"Rejection Block ({near_rej[0]['wick_pct']:.0f}% wick)")
-            else:
-                miss.append("No Rejection Block")
+            if "rejblock" in active_strats:
+                near_rej = [r for r in rej_blocks if r["type"] == "BULLISH_REJECTION" and
+                            r["low"] <= oh and r["high"] >= ol]
+                if near_rej:
+                    hit.append(f"Rejection Block ({near_rej[0]['wick_pct']:.0f}% wick)")
+                else:
+                    miss.append("No Rejection Block")
 
             # Propulsion block in direction
-            if any(p["type"] == "BULLISH_PROPULSION" for p in propulsions):
-                hit.append("Bullish Propulsion Block")
-            else:
-                miss.append("No Propulsion Block")
+            if "propulsion" in active_strats:
+                if any(p["type"] == "BULLISH_PROPULSION" for p in propulsions):
+                    hit.append("Bullish Propulsion Block")
+                else:
+                    miss.append("No Propulsion Block")
 
             # IPDA range confluence (price near 20d low)
-            ipda20 = ipda.get("20d", {})
-            if ipda20 and ask <= ipda20.get("low", 0) * 1.001:
-                hit.append("Near IPDA 20d Low")
-            else:
-                miss.append("No IPDA confluence")
+            if "ipda" in active_strats:
+                ipda20 = ipda.get("20d", {})
+                if ipda20 and ask <= ipda20.get("low", 0) * 1.001:
+                    hit.append("Near IPDA 20d Low")
+                else:
+                    miss.append("No IPDA confluence")
 
             # Inducement nearby (cleared)
-            if not inducements:
-                hit.append("Inducement cleared")
-            else:
-                miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
+            if "inducement" in active_strats:
+                if not inducements:
+                    hit.append("Inducement cleared")
+                else:
+                    miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
 
             if len(hit) >= CONFIG["min_confluence"]:
                 sl_price = ol - buf
@@ -1339,118 +1372,135 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
             hit.append("Price in Bearish OB")
 
             # FVG overlap
-            if any(f["type"] == "BEARISH_FVG" and f["bottom"] <= oh and f["top"] >= ol for f in fvgs):
-                hit.append("Bearish FVG overlap")
-            else:
-                miss.append("No FVG confluence")
+            if "fvg" in active_strats:
+                if any(f["type"] == "BEARISH_FVG" and f["bottom"] <= oh and f["top"] >= ol for f in fvgs):
+                    hit.append("Bearish FVG overlap")
+                else:
+                    miss.append("No FVG confluence")
 
             # S&R proximity
-            near_sr = [v for v in sr[:6] if v["type"] == "RESISTANCE" and v["dist_pips"] < 20]
-            if near_sr:
-                hit.append(f"Resistance @ {near_sr[0]['price']:.5f}")
-            else:
-                miss.append("No nearby S&R")
+            if "sr" in active_strats:
+                near_sr = [v for v in sr[:6] if v["type"] == "RESISTANCE" and v["dist_pips"] < 20]
+                if near_sr:
+                    hit.append(f"Resistance @ {near_sr[0]['price']:.5f}")
+                else:
+                    miss.append("No nearby S&R")
 
             # Kill Zone
-            if is_kz:
-                hit.append(f"Kill Zone: {kz_name}")
-            else:
-                miss.append("Outside kill zone")
+            if "kz" in active_strats:
+                if is_kz:
+                    hit.append(f"Kill Zone: {kz_name}")
+                else:
+                    miss.append("Outside kill zone")
 
             # Silver Bullet
-            if is_sb:
-                hit.append(f"Silver Bullet: {sb_name}")
-            else:
-                miss.append("No Silver Bullet")
+            if "silver" in active_strats:
+                if is_sb:
+                    hit.append(f"Silver Bullet: {sb_name}")
+                else:
+                    miss.append("No Silver Bullet")
 
             # ICT Macro
-            if is_macro:
-                hit.append(f"ICT Macro: {macro_name}")
-            else:
-                miss.append("No macro window")
+            if "macros" in active_strats:
+                if is_macro:
+                    hit.append(f"ICT Macro: {macro_name}")
+                else:
+                    miss.append("No macro window")
 
             # Premium zone (ideal for shorts)
-            if pd_zone == "PREMIUM":
-                hit.append("Price in Premium zone")
-            elif pd_zone == "DISCOUNT":
-                miss.append("Price in Discount (unfavourable for SELL)")
-            else:
-                miss.append(f"Price at {pd_zone}")
+            if "pd" in active_strats:
+                if pd_zone == "PREMIUM":
+                    hit.append("Price in Premium zone")
+                elif pd_zone == "DISCOUNT":
+                    miss.append("Price in Discount (unfavourable for SELL)")
+                else:
+                    miss.append(f"Price at {pd_zone}")
 
             # Liquidity sweep (BSL swept → bearish)
-            bsl_sweeps = [s for s in sweeps if s["type"] == "BSL_SWEEP" and s["bars_ago"] <= 10]
-            if bsl_sweeps:
-                hit.append(f"BSL swept {bsl_sweeps[0]['bars_ago']} bars ago")
-            else:
-                miss.append("No recent BSL sweep")
+            if "liq" in active_strats:
+                bsl_sweeps = [s for s in sweeps if s["type"] == "BSL_SWEEP" and s["bars_ago"] <= 10]
+                if bsl_sweeps:
+                    hit.append(f"BSL swept {bsl_sweeps[0]['bars_ago']} bars ago")
+                else:
+                    miss.append("No recent BSL sweep")
 
             # Turtle Soup SELL
-            if any(t["type"] == "TURTLE_SOUP_SELL" and t["bars_ago"] <= 8 for t in turtle_soups):
-                hit.append("Turtle Soup SELL")
-            else:
-                miss.append("No Turtle Soup")
+            if "turtle" in active_strats:
+                if any(t["type"] == "TURTLE_SOUP_SELL" and t["bars_ago"] <= 8 for t in turtle_soups):
+                    hit.append("Turtle Soup SELL")
+                else:
+                    miss.append("No Turtle Soup")
 
             # BPR nearby
-            near_bpr = [b for b in bprs if b["bottom"] <= oh and b["top"] >= ol]
-            if near_bpr:
-                hit.append(f"BPR @ {near_bpr[0]['mid']:.5f}")
-            else:
-                miss.append("No BPR")
+            if "bpr" in active_strats:
+                near_bpr = [b for b in bprs if b["bottom"] <= oh and b["top"] >= ol]
+                if near_bpr:
+                    hit.append(f"BPR @ {near_bpr[0]['mid']:.5f}")
+                else:
+                    miss.append("No BPR")
 
             # Opening Gap nearby
-            near_gap = [g for g in gaps if g["type"].startswith("BEARISH") and
-                        g["bottom"] <= oh + 10*pip and g["top"] >= ol - 10*pip]
-            if near_gap:
-                hit.append(f"{near_gap[0]['kind']} nearby ({near_gap[0]['size_pips']} pips)")
-            else:
-                miss.append("No opening gap")
+            if "nwog" in active_strats or "ndog" in active_strats:
+                near_gap = [g for g in gaps if g["type"].startswith("BEARISH") and
+                            g["bottom"] <= oh + 10*pip and g["top"] >= ol - 10*pip]
+                if near_gap:
+                    hit.append(f"{near_gap[0]['kind']} nearby ({near_gap[0]['size_pips']} pips)")
+                else:
+                    miss.append("No opening gap")
 
             # CISD
-            if cisd:
-                hit.append("CISD bearish confirmed")
-            else:
-                miss.append("No CISD")
+            if "cisd" in active_strats:
+                if cisd:
+                    hit.append("CISD bearish confirmed")
+                else:
+                    miss.append("No CISD")
 
             # Power of 3
-            if po3_phase == "DISTRIBUTION":
-                hit.append("AMD: Distribution phase")
-            elif po3_phase == "MANIPULATION":
-                miss.append("AMD: Manipulation phase")
-            else:
-                miss.append(f"AMD: {po3_phase}")
+            if "po3" in active_strats:
+                if po3_phase == "DISTRIBUTION":
+                    hit.append("AMD: Distribution phase")
+                elif po3_phase == "MANIPULATION":
+                    miss.append("AMD: Manipulation phase")
+                else:
+                    miss.append(f"AMD: {po3_phase}")
 
             # BOS confirmed
-            if any(e["type"] == "BOS_BEARISH" for e in bos_choch):
-                hit.append("BOS confirmed bearish")
-            else:
-                miss.append("No BOS")
+            if "bos" in active_strats:
+                if any(e["type"] == "BOS_BEARISH" for e in bos_choch):
+                    hit.append("BOS confirmed bearish")
+                else:
+                    miss.append("No BOS")
 
             # Rejection Block at OB
-            near_rej = [r for r in rej_blocks if r["type"] == "BEARISH_REJECTION" and
-                        r["low"] <= oh and r["high"] >= ol]
-            if near_rej:
-                hit.append(f"Rejection Block ({near_rej[0]['wick_pct']:.0f}% wick)")
-            else:
-                miss.append("No Rejection Block")
+            if "rejblock" in active_strats:
+                near_rej = [r for r in rej_blocks if r["type"] == "BEARISH_REJECTION" and
+                            r["low"] <= oh and r["high"] >= ol]
+                if near_rej:
+                    hit.append(f"Rejection Block ({near_rej[0]['wick_pct']:.0f}% wick)")
+                else:
+                    miss.append("No Rejection Block")
 
             # Propulsion block in direction
-            if any(p["type"] == "BEARISH_PROPULSION" for p in propulsions):
-                hit.append("Bearish Propulsion Block")
-            else:
-                miss.append("No Propulsion Block")
+            if "propulsion" in active_strats:
+                if any(p["type"] == "BEARISH_PROPULSION" for p in propulsions):
+                    hit.append("Bearish Propulsion Block")
+                else:
+                    miss.append("No Propulsion Block")
 
             # IPDA range confluence (price near 20d high)
-            ipda20 = ipda.get("20d", {})
-            if ipda20 and bid >= ipda20.get("high", float("inf")) * 0.999:
-                hit.append("Near IPDA 20d High")
-            else:
-                miss.append("No IPDA confluence")
+            if "ipda" in active_strats:
+                ipda20 = ipda.get("20d", {})
+                if ipda20 and bid >= ipda20.get("high", float("inf")) * 0.999:
+                    hit.append("Near IPDA 20d High")
+                else:
+                    miss.append("No IPDA confluence")
 
             # Inducement nearby (cleared)
-            if not inducements:
-                hit.append("Inducement cleared")
-            else:
-                miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
+            if "inducement" in active_strats:
+                if not inducements:
+                    hit.append("Inducement cleared")
+                else:
+                    miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
 
             if len(hit) >= CONFIG["min_confluence"]:
                 sl_price = oh + buf
@@ -1702,13 +1752,21 @@ def monitor_open_trades(ctx: dict, bias: str):
         # ── 3. Trail to break-even ────────────────────────────────
         trail_be = CONFIG.get("trail_be_pips", 0)
         if trail_be > 0 and profit_pips >= trail_be:
-            be_price = round(p.price_open, mt5.symbol_info(p.symbol).digits if mt5.symbol_info(p.symbol) else 5)
-            if direction == "BUY"  and (p.sl == 0 or p.sl < be_price):
-                _modify_sl(ticket, p.symbol, be_price)
-                log.info(f"Trail BE: moved SL → {be_price:.5f} on #{ticket}")
-            elif direction == "SELL" and (p.sl == 0 or p.sl > be_price):
-                _modify_sl(ticket, p.symbol, be_price)
-                log.info(f"Trail BE: moved SL → {be_price:.5f} on #{ticket}")
+            sym_info  = mt5.symbol_info(p.symbol)
+            digits    = sym_info.digits if sym_info else 5
+            # Apply a small buffer so the SL sits a few pips beyond entry
+            # rather than exactly at it — prevents closing on a mere re-touch
+            be_buf    = CONFIG.get("trail_be_buffer_pips", 2) * pip
+            if direction == "BUY":
+                be_price = round(p.price_open - be_buf, digits)
+                if p.sl == 0 or p.sl < be_price:
+                    _modify_sl(ticket, p.symbol, be_price)
+                    log.info(f"Trail BE: moved SL → {be_price:.5f} on #{ticket}")
+            else:
+                be_price = round(p.price_open + be_buf, digits)
+                if p.sl == 0 or p.sl > be_price:
+                    _modify_sl(ticket, p.symbol, be_price)
+                    log.info(f"Trail BE: moved SL → {be_price:.5f} on #{ticket}")
 
         # ── Auto-close if exit condition met ─────────────────────
         if exit_reason:
@@ -1883,16 +1941,17 @@ def bot_loop():
             sigs = generate_signals(symbol, bias, ctx)
             active_signals = sigs
 
-            # Execute — only inside kill zones, take the highest-scored signal
+            # Execute — respect kill-zone gate (configurable) and min confluence
             if sigs:
                 best = sigs[0]
-                if is_kz and best["score"] >= CONFIG["min_confluence"]:
+                kz_ok = (not CONFIG.get("require_kill_zone", True)) or is_kz
+                if kz_ok and best["score"] >= CONFIG["min_confluence"]:
                     # Inject context for ML record-keeping
                     best["_ctx"]  = ctx
                     best["_bias"] = bias
                     place_order(best)
                 else:
-                    reason = "outside kill zone" if not is_kz else f"score {best['score']} < {CONFIG['min_confluence']}"
+                    reason = "outside kill zone" if not kz_ok else f"score {best['score']} < {CONFIG['min_confluence']}"
                     log.info(f"Signal queued ({reason}): {best['direction']} {symbol}")
 
             # Refresh open positions (also detects TP/SL closures)
@@ -2033,7 +2092,8 @@ def api_config():
         data = request.get_json(force=True)
         editable = ["risk_pct", "min_rr", "max_trades", "symbol",
                     "scan_interval", "min_confluence", "fvg_min_pips",
-                    "active_strategies"]
+                    "active_strategies", "require_kill_zone",
+                    "trail_be_pips", "trail_be_buffer_pips"]
         for k in editable:
             if k in data:
                 CONFIG[k] = data[k]

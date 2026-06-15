@@ -1007,9 +1007,10 @@ const DEMO = {
     { ticket:98765432, symbol:"EURUSD", direction:"BUY", entry:1.08200, current:1.08542, sl:1.07900, tp:1.08900, lots:0.10, pnl:342.00, time:new Date(Date.now()-7200000).toISOString() },
   ],
   kill_zones:[
-    { name:"London Open",   start:7,  end:10, active:true,  mins_left:87 },
-    { name:"New York Open", start:12, end:15, active:false, mins_until:182 },
-    { name:"Asian Open",    start:0,  end:3,  active:false, mins_until:340 },
+    { name:"Asian Session",  start:0,  end:3,  active:false, mins_until:340 },
+    { name:"London Open",    start:7,  end:10, active:true,  mins_left:87 },
+    { name:"New York AM",    start:12, end:15, active:false, mins_until:182 },
+    { name:"London Close",   start:15, end:17, active:false, mins_until:302 },
   ],
   sr_levels:[
     { price:1.08900, type:"RESISTANCE", strength:3, dist_pips:35.8 },
