@@ -494,6 +494,21 @@
         <span class="set-label">Scan interval (s)</span>
         <input class="set-input" id="set-scan" type="number" step="5" min="10" max="600" onchange="updateSetting('scan_interval',parseInt(this.value))"/>
       </div>
+      <div class="set-row">
+        <span class="set-label">Trail BE (pips)</span>
+        <input class="set-input" id="set-trailbe" type="number" step="1" min="0" max="200" onchange="updateSetting('trail_be_pips',parseInt(this.value))"/>
+      </div>
+      <div class="set-row">
+        <span class="set-label">BE buffer (pips)</span>
+        <input class="set-input" id="set-bebuf" type="number" step="0.5" min="0" max="20" onchange="updateSetting('trail_be_buffer_pips',parseFloat(this.value))"/>
+      </div>
+      <div class="set-row">
+        <span class="set-label">Require kill zone</span>
+        <select class="set-input" id="set-kzgate" onchange="updateSetting('require_kill_zone',this.value==='true')">
+          <option value="false">Off (trade any time)</option>
+          <option value="true">On (KZ only)</option>
+        </select>
+      </div>
     </div>
 
   </div><!-- /left -->
@@ -947,6 +962,44 @@ async function loadSettings() {
   }
 }
 
+// ── Apply config from bot to UI — called on every status poll ────────
+// Uses direct .value assignment (no events fired) to avoid onChange ping-pong
+function applyConfigToUI(cfg) {
+  if (!cfg) return;
+  const set = (id, val) => { const el=document.getElementById(id); if(el && val!=null) el.value=val; };
+  set("set-risk",   cfg.risk_pct);
+  set("set-rr",     cfg.min_rr);
+  set("set-max",    cfg.max_trades);
+  set("set-conf",   cfg.min_confluence);
+  set("set-fvg",    cfg.fvg_min_pips);
+  set("set-scan",   cfg.scan_interval);
+  set("set-trailbe",cfg.trail_be_pips);
+  set("set-bebuf",  cfg.trail_be_buffer_pips);
+  const kzEl = document.getElementById("set-kzgate");
+  if (kzEl && cfg.require_kill_zone != null) kzEl.value = cfg.require_kill_zone ? "true" : "false";
+
+  // Sync strategy checkboxes to match bot's active_strategies list
+  if (Array.isArray(cfg.active_strategies)) {
+    const botStrats = new Set(cfg.active_strategies);
+    // Only update if different from current UI state to avoid flicker
+    if (JSON.stringify([...activeStrats].sort()) !== JSON.stringify([...botStrats].sort())) {
+      activeStrats = botStrats;
+      localStorage.setItem("activeStrats", JSON.stringify([...activeStrats]));
+      STRATEGIES.forEach(s => {
+        const row = document.getElementById("sr-"+s.id);
+        const chk = row?.querySelector(".strat-check");
+        const on  = activeStrats.has(s.id);
+        if (row) row.classList.toggle("on", on);
+        if (chk)  chk.checked = on;
+      });
+      updateStratCount();
+    }
+  }
+
+  // Keep internal config mirror in sync
+  Object.assign(_currentConfig, cfg);
+}
+
 async function updateSetting(key, val) {
   if (val===""||val==null||(typeof val==="number"&&isNaN(val))) return;
   _currentConfig[key]=val;
@@ -1196,6 +1249,10 @@ function render(data) {
   renderIPDA(data.ipda||{}, curPrice);
   renderSignals(data.active_signals||[], bias);
   renderTrades(data.open_trades||[]);
+
+  // Sync settings panel to whatever the bot is actually running —
+  // covers restarts where CONFIG may differ from what's shown in the UI
+  applyConfigToUI(data.config);
 }
 
 function renderConfluenceMeter(cfs, data) {

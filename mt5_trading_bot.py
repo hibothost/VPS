@@ -2042,6 +2042,21 @@ def api_status():
         "active_signals": active_signals,
         "kill_zones":     kill_zone_status(),
         "sr_levels":      sr_cache[:6],
+        # Embed live config so the dashboard always reflects what the bot is
+        # actually running — no stale values after a restart
+        "config": {
+            "risk_pct":            CONFIG.get("risk_pct", 1.0),
+            "min_rr":              CONFIG.get("min_rr", 2.0),
+            "max_trades":          CONFIG.get("max_trades", 3),
+            "min_confluence":      CONFIG.get("min_confluence", 3),
+            "fvg_min_pips":        CONFIG.get("fvg_min_pips", 2.0),
+            "scan_interval":       CONFIG.get("scan_interval", 60),
+            "trail_be_pips":       CONFIG.get("trail_be_pips", 20),
+            "trail_be_buffer_pips":CONFIG.get("trail_be_buffer_pips", 2),
+            "require_kill_zone":   CONFIG.get("require_kill_zone", False),
+            "symbol":              CONFIG.get("symbol", ""),
+            "active_strategies":   CONFIG.get("active_strategies", []),
+        },
     })
 
 
