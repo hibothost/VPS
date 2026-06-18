@@ -323,6 +323,27 @@
   .smt-row-src.fallback  { background: rgba(255,181,71,.08); color: var(--a); border: 1px solid rgba(255,181,71,.15); }
   .smt-row-src.config    { background: rgba(100,100,120,.15); color: var(--dim); border: 1px solid var(--border); }
 
+  /* SMT SWING CHART */
+  .smt-chart-wrap { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .smt-chart-hdr { font-size: 8px; color: var(--dim); letter-spacing: 1px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+  .smt-chart-hdr-tag { font-size: 7px; padding: 1px 5px; border-radius: 2px; }
+  .smt-chart-block { margin-bottom: 8px; }
+  .smt-chart-label-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+  .smt-chart-sym { font-size: 9px; font-weight: 700; }
+  .smt-chart-dirs { display: flex; gap: 5px; }
+  .smt-dir-badge { font-size: 7px; padding: 1px 5px; border-radius: 2px; font-weight: 700; }
+  .smt-dir-badge.hh  { background: rgba(255,69,96,.12);  color: var(--r); }
+  .smt-dir-badge.lh  { background: rgba(0,217,126,.12);  color: var(--g); }
+  .smt-dir-badge.hl  { background: rgba(0,217,126,.12);  color: var(--g); }
+  .smt-dir-badge.ll  { background: rgba(255,69,96,.12);  color: var(--r); }
+  .smt-dir-badge.neu { background: rgba(100,100,120,.15); color: var(--dim); }
+  .smt-chart-svg { display: block; width: 100%; border-radius: 3px; background: rgba(6,6,15,.6); border: 1px solid var(--border); }
+  .smt-divg-row { display: flex; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 3px; margin-top: 2px; font-size: 8px; }
+  .smt-divg-row.bearish { background: rgba(255,69,96,.06); border: 1px solid rgba(255,69,96,.15); color: var(--r); }
+  .smt-divg-row.bullish { background: rgba(0,217,126,.06); border: 1px solid rgba(0,217,126,.15); color: var(--g); }
+  .smt-divg-row.none    { background: rgba(23,23,40,.5);   border: 1px solid var(--border);       color: var(--dim); }
+  .smt-divg-icon { font-size: 10px; }
+
   /* IPDA PANEL */
   .ipda-row { margin-bottom: 7px; }
   .ipda-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
@@ -682,11 +703,12 @@ async function connectAccount() {
       await refresh();
       await loadSettings();
 
-      // New account = new broker = symbol list + SMT pairs must be refetched
-      _symLoaded = false;
-      _smtPairs  = null;
+      // New account = new broker = symbol list + SMT data must be refetched
+      _symLoaded  = false;
+      _smtPairs   = null;
+      _smtSwings  = null;
       loadSymbols();
-      await fetchSmtPairs();
+      await Promise.all([fetchSmtPairs(), fetchSmtSwings()]);
       renderSmtPanel(null);
 
     } else {
@@ -1121,8 +1143,9 @@ const DEMO_EQUITY = Array.from({length:60},(_,i)=>({
   equity:10000+Math.sin(i*0.35)*150+i*5.5,
 }));
 
-// ── SMT PAIRS ─────────────────────────────────────────────────────
-let _smtPairs = null;
+// ── SMT PAIRS + SWING CHART ───────────────────────────────────────
+let _smtPairs  = null;
+let _smtSwings = null;
 
 async function fetchSmtPairs() {
   try {
@@ -1131,19 +1154,100 @@ async function fetchSmtPairs() {
   } catch {}
 }
 
+async function fetchSmtSwings() {
+  try {
+    const r = await fetch(BASE + "/api/smt-swings", { signal: AbortSignal.timeout(4000) });
+    if (r.ok) { _smtSwings = await r.json(); }
+    else { _smtSwings = null; }
+  } catch { _smtSwings = null; }
+}
+
+/* Build a compact SVG sparkline with swing markers.
+   W / H are the viewBox dimensions (unitless).               */
+function _smtSparkline(closes, swingHighs, swingLows, lineColor, W, H) {
+  if (!closes || closes.length < 2) {
+    return `<text x="4" y="18" fill="#374151" font-size="9" font-family="monospace">no data</text>`;
+  }
+  const vals = closes.map(c => c.close);
+  const hi   = Math.max(...vals);
+  const lo   = Math.min(...vals);
+  const rng  = hi - lo || hi * 0.001 || 1;
+  const padX = 4, padY = 6;
+
+  const sx = i  => padX + (i / (vals.length - 1)) * (W - 2 * padX);
+  const sy = v  => H - padY - ((v - lo) / rng) * (H - 2 * padY);
+
+  // Price line
+  const pts = vals.map((v, i) => `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).join(" L");
+  const path = `<path d="M${pts}" fill="none" stroke="${lineColor}" stroke-width="1.2" opacity="0.85"/>`;
+
+  // Area fill under the line
+  const first = `${sx(0).toFixed(1)},${H}`;
+  const last  = `${sx(vals.length - 1).toFixed(1)},${H}`;
+  const area  = `<path d="M${first} L${pts} L${last} Z" fill="${lineColor}" opacity="0.06"/>`;
+
+  // Swing high markers (small red circles at top)
+  const shMarkers = (swingHighs || []).map(sw => {
+    const x = sx(sw.ci).toFixed(1);
+    const y = sy(sw.price).toFixed(1);
+    return `<circle cx="${x}" cy="${y}" r="2.8" fill="#ff4560" opacity="0.9"/>
+            <line x1="${x}" y1="${y}" x2="${x}" y2="${(parseFloat(y)+6).toFixed(1)}" stroke="#ff4560" stroke-width="0.8" opacity="0.5"/>`;
+  }).join("");
+
+  // Swing low markers (small green circles at bottom)
+  const slMarkers = (swingLows || []).map(sw => {
+    const x = sx(sw.ci).toFixed(1);
+    const y = sy(sw.price).toFixed(1);
+    return `<circle cx="${x}" cy="${y}" r="2.8" fill="#00d97e" opacity="0.9"/>
+            <line x1="${x}" y1="${y}" x2="${x}" y2="${(parseFloat(y)-6).toFixed(1)}" stroke="#00d97e" stroke-width="0.8" opacity="0.5"/>`;
+  }).join("");
+
+  // Swing high direction arrow between last two highs
+  let dirArrow = "";
+  if (swingHighs && swingHighs.length >= 2) {
+    const prev = swingHighs[swingHighs.length - 2];
+    const last = swingHighs[swingHighs.length - 1];
+    const isHH = last.price > prev.price;
+    const x1 = sx(prev.ci).toFixed(1), y1 = (sy(prev.price) - 8).toFixed(1);
+    const x2 = sx(last.ci).toFixed(1), y2 = (sy(last.price) - 8).toFixed(1);
+    const col = isHH ? "#ff4560" : "#00d97e";
+    dirArrow += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="1" stroke-dasharray="2,2" opacity="0.7"/>
+                 <polygon points="${x2},${y2} ${(parseFloat(x2)-3).toFixed(1)},${(parseFloat(y2)+4).toFixed(1)} ${(parseFloat(x2)+3).toFixed(1)},${(parseFloat(y2)+4).toFixed(1)}" fill="${col}" opacity="0.7"/>`;
+  }
+
+  // Swing low direction arrow between last two lows
+  if (swingLows && swingLows.length >= 2) {
+    const prev = swingLows[swingLows.length - 2];
+    const last = swingLows[swingLows.length - 1];
+    const isHL = last.price > prev.price;
+    const x1 = sx(prev.ci).toFixed(1), y1 = (sy(prev.price) + 8).toFixed(1);
+    const x2 = sx(last.ci).toFixed(1), y2 = (sy(last.price) + 8).toFixed(1);
+    const col = isHL ? "#00d97e" : "#ff4560";
+    dirArrow += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="1" stroke-dasharray="2,2" opacity="0.7"/>`;
+  }
+
+  return area + path + shMarkers + slMarkers + dirArrow;
+}
+
+function _dirBadge(dir) {
+  const cls = dir === "HH" ? "hh" : dir === "LH" ? "lh" : dir === "HL" ? "hl" : dir === "LL" ? "ll" : "neu";
+  return `<span class="smt-dir-badge ${cls}">${dir}</span>`;
+}
+
 function renderSmtPanel(statusData) {
   const el = document.getElementById("smt-panel");
   if (!el) return;
 
-  const pairs    = _smtPairs;
-  const resolved = pairs?.resolved || {};
-  const config   = pairs?.configured || {};
-  const source   = pairs?.source || "disconnected";
-  const sym      = _activeSym || (statusData && statusData.symbol) || null;
+  const pairs     = _smtPairs;
+  const resolved  = pairs?.resolved || {};
+  const config    = pairs?.configured || {};
+  const source    = pairs?.source || "disconnected";
+  const sym       = _activeSym || (statusData && statusData.symbol) || null;
   const divActive = !!(statusData && statusData.smt_divergence);
+  const bias      = (statusData && statusData.market_bias) || "NEUTRAL";
 
   // Disconnected / no data state
-  if (source === "disconnected" || !Object.keys(resolved).length && !Object.keys(config).length) {
+  if (source === "disconnected" || (!Object.keys(resolved).length && !Object.keys(config).length)) {
     el.innerHTML = `<div style="color:var(--dim);font-size:9px">Connect bot to view</div>`;
     return;
   }
@@ -1151,9 +1255,7 @@ function renderSmtPanel(statusData) {
   let html = "";
 
   // ── Active symbol block ──────────────────────────────────────────
-  const corrSym = sym
-    ? (resolved[sym] || null)
-    : null;
+  const corrSym = sym ? (resolved[sym] || null) : null;
 
   if (sym) {
     const confirmed = divActive && !!corrSym;
@@ -1169,13 +1271,69 @@ function renderSmtPanel(statusData) {
     </div>`;
   }
 
+  // ── Swing comparison chart ────────────────────────────────────────
+  const sw = _smtSwings;
+  if (sw && !sw.error && sw.a && sw.b) {
+    const W = 220, H = 58;
+    const svgA = _smtSparkline(sw.a.closes, sw.a.swing_highs, sw.a.swing_lows, "#4ea8ff", W, H);
+    const svgB = _smtSparkline(sw.b.closes, sw.b.swing_highs, sw.b.swing_lows, "#a78bfa", W, H);
+
+    // Divergence summary row
+    let divgClass = "none", divgIcon = "○", divgText = "No divergence detected";
+    if (sw.divergence) {
+      if (bias === "BEARISH") {
+        divgClass = "bearish"; divgIcon = "▼"; divgText = `Bearish SMT — ${sw.sym_a} HH · ${sw.sym_b} LH`;
+      } else {
+        divgClass = "bullish"; divgIcon = "▲"; divgText = `Bullish SMT — ${sw.sym_a} LL · ${sw.sym_b} HL`;
+      }
+    }
+
+    html += `
+    <div class="smt-chart-wrap">
+      <div class="smt-chart-hdr">
+        <span>SWING COMPARISON</span>
+        <span class="smt-chart-hdr-tag" style="background:rgba(78,168,255,.1);color:var(--b);border:1px solid rgba(78,168,255,.15)">${sw.a.closes?.length || 0} bars · ${(CONFIG["ltf"]||"LTF")}</span>
+      </div>
+
+      <div class="smt-chart-block">
+        <div class="smt-chart-label-row">
+          <span class="smt-chart-sym" style="color:var(--b)">${sw.sym_a}</span>
+          <div class="smt-chart-dirs">
+            ${_dirBadge(sw.a.high_dir)}
+            ${_dirBadge(sw.a.low_dir)}
+          </div>
+        </div>
+        <svg class="smt-chart-svg" viewBox="0 0 ${W} ${H}" height="58" preserveAspectRatio="none">
+          ${svgA}
+        </svg>
+      </div>
+
+      <div class="smt-chart-block">
+        <div class="smt-chart-label-row">
+          <span class="smt-chart-sym" style="color:var(--p)">${sw.sym_b}</span>
+          <div class="smt-chart-dirs">
+            ${_dirBadge(sw.b.high_dir)}
+            ${_dirBadge(sw.b.low_dir)}
+          </div>
+        </div>
+        <svg class="smt-chart-svg" viewBox="0 0 ${W} ${H}" height="58" preserveAspectRatio="none">
+          ${svgB}
+        </svg>
+      </div>
+
+      <div class="smt-divg-row ${divgClass}">
+        <span class="smt-divg-icon">${divgIcon}</span>
+        <span>${divgText}</span>
+      </div>
+    </div>`;
+  }
+
   // ── Full resolved pairs list ─────────────────────────────────────
   const entries = Object.entries(resolved);
   const configEntries = Object.entries(config);
 
   if (entries.length) {
-    html += `<div class="smt-all-hdr">RESOLVED FROM BROKER</div>`;
-    // Deduplicate: only show unique a→b pairs (not both directions)
+    html += `<div class="smt-all-hdr" style="margin-top:10px">RESOLVED FROM BROKER</div>`;
     const seen = new Set();
     const unique = entries.filter(([a, b]) => {
       const key = [a, b].sort().join("|");
@@ -1183,8 +1341,6 @@ function renderSmtPanel(statusData) {
       seen.add(key); return true;
     });
     html += unique.map(([a, b]) => {
-      // Check if it was a direct match (exact candidate found) or fallback
-      // We detect fallback: if suffix of a != start of difference between b and base_b
       const isActive = sym === a;
       return `
       <div class="smt-row" style="${isActive ? "opacity:1" : "opacity:.65"}">
@@ -1197,8 +1353,7 @@ function renderSmtPanel(statusData) {
       </div>`;
     }).join("");
   } else if (configEntries.length) {
-    // Fallback: show raw config pairs with a note
-    html += `<div class="smt-all-hdr">CONFIG PAIRS (connect to resolve)</div>`;
+    html += `<div class="smt-all-hdr" style="margin-top:10px">CONFIG PAIRS (connect to resolve)</div>`;
     const seen = new Set();
     html += configEntries.filter(([a, b]) => {
       const key = [a, b].sort().join("|");
@@ -1825,10 +1980,14 @@ async function refresh() {
   if (currentTab==="chart")       renderEquityChart();
   if (currentTab==="confluences") renderConfluences(status);
 
-  // Fetch SMT pairs once on first successful live connection, then every ~60s
+  // Fetch SMT pairs once on first live connection, then every ~60s
+  // Fetch SMT swings every cycle when live (they update each scan)
   _smtFetchCounter++;
-  if (isLive && status.connected && (_smtPairs === null || _smtFetchCounter % 12 === 0)) {
-    await fetchSmtPairs();
+  if (isLive && status.connected) {
+    const promises = [];
+    if (_smtPairs === null || _smtFetchCounter % 12 === 0) promises.push(fetchSmtPairs());
+    promises.push(fetchSmtSwings());
+    await Promise.all(promises);
   }
   renderSmtPanel(status);
 }

@@ -2265,6 +2265,106 @@ def api_smt_pairs():
     })
 
 
+@app.route("/api/smt-swings")
+def api_smt_swings():
+    """
+    Return recent closes + swing highs/lows for the active symbol and its SMT
+    correlated pair so the dashboard can draw a side-by-side swing comparison.
+
+    Swing indices are normalised to the returned closes window so the frontend
+    can overlay markers without any further index arithmetic.
+    """
+    if not state["connected"]:
+        return jsonify({"error": "disconnected"}), 400
+
+    sym_a = CONFIG.get("symbol")
+    if not sym_a:
+        return jsonify({"error": "no symbol selected"}), 400
+
+    sym_b = (state.get("smt_pair_cache", {}).get(sym_a)
+             or CONFIG.get("smt_pairs", {}).get(sym_a))
+    if not sym_b:
+        return jsonify({"error": f"no correlated pair for {sym_a}"}), 404
+
+    try:
+        BARS      = 60   # fetch 60 bars; expose last 30 for the sparkline
+        DISPLAY   = 30
+        n         = max(3, CONFIG["swing_lookback"] // 2)
+
+        df_a = get_ohlcv(sym_a, CONFIG["ltf"], BARS)
+        df_b = get_ohlcv(sym_b, CONFIG["ltf"], BARS)
+
+        if df_a is None or df_b is None or len(df_a) < 20 or len(df_b) < 20:
+            return jsonify({"error": "insufficient data"}), 400
+
+        sh_a, sl_a = find_swings(df_a, n)
+        sh_b, sl_b = find_swings(df_b, n)
+
+        start = max(0, len(df_a) - DISPLAY)
+
+        def _closes(df):
+            return [
+                {"time": str(t), "close": float(c), "high": float(h), "low": float(lo)}
+                for t, c, h, lo in zip(
+                    df.index[-DISPLAY:],
+                    df["close"].values[-DISPLAY:],
+                    df["high"].values[-DISPLAY:],
+                    df["low"].values[-DISPLAY:],
+                )
+            ]
+
+        def _norm_swings(swings, df_len):
+            """Convert df-absolute indices to closes-window indices."""
+            out = []
+            for sw in swings:
+                ci = sw["i"] - (df_len - DISPLAY)
+                if 0 <= ci < DISPLAY:
+                    out.append({"ci": int(ci), "price": sw["price"], "time": sw["time"]})
+            return out
+
+        sh_a_n = _norm_swings(sh_a, len(df_a))
+        sl_a_n = _norm_swings(sl_a, len(df_a))
+        sh_b_n = _norm_swings(sh_b, len(df_b))
+        sl_b_n = _norm_swings(sl_b, len(df_b))
+
+        def _dir(swings):
+            """Return 'HH'/'LH' for highs or 'HL'/'LL' for lows based on last 2."""
+            if len(swings) < 2:
+                return "—"
+            return ("HH" if swings[-1]["price"] > swings[-2]["price"] else "LH") \
+                if swings is sh_a_n or swings is sh_b_n \
+                else ("HL" if swings[-1]["price"] > swings[-2]["price"] else "LL")
+
+        return jsonify({
+            "sym_a": sym_a,
+            "sym_b": sym_b,
+            "bias":       state.get("market_bias", "NEUTRAL"),
+            "divergence": state.get("smt_divergence", False),
+            "a": {
+                "closes":      _closes(df_a),
+                "swing_highs": sh_a_n[-4:],
+                "swing_lows":  sl_a_n[-4:],
+                "high_dir":    "HH" if (len(sh_a_n) >= 2 and sh_a_n[-1]["price"] > sh_a_n[-2]["price"]) else ("LH" if len(sh_a_n) >= 2 else "—"),
+                "low_dir":     "HL" if (len(sl_a_n) >= 2 and sl_a_n[-1]["price"] > sl_a_n[-2]["price"]) else ("LL" if len(sl_a_n) >= 2 else "—"),
+                "last_high":   sh_a_n[-1]["price"] if sh_a_n else None,
+                "last_low":    sl_a_n[-1]["price"] if sl_a_n else None,
+            },
+            "b": {
+                "closes":      _closes(df_b),
+                "swing_highs": sh_b_n[-4:],
+                "swing_lows":  sl_b_n[-4:],
+                "high_dir":    "HH" if (len(sh_b_n) >= 2 and sh_b_n[-1]["price"] > sh_b_n[-2]["price"]) else ("LH" if len(sh_b_n) >= 2 else "—"),
+                "low_dir":     "HL" if (len(sl_b_n) >= 2 and sl_b_n[-1]["price"] > sl_b_n[-2]["price"]) else ("LL" if len(sl_b_n) >= 2 else "—"),
+                "last_high":   sh_b_n[-1]["price"] if sh_b_n else None,
+                "last_low":    sl_b_n[-1]["price"] if sl_b_n else None,
+            },
+        })
+
+    except Exception as exc:
+        log.warning(f"api_smt_swings: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/broker", methods=["GET", "POST"])
 def api_broker():
     """Get or set MT5 broker login credentials and (re)connect."""
