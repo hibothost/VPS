@@ -180,6 +180,14 @@ state = {
     "smt_pair_cache": {},   # resolved broker-symbol → broker-symbol (built after connect)
     "current_price":  {},   # {symbol, bid, ask, mid, digits} — updated every scan
     "ctx_confluences": [],  # [{name, active, hint}] — contextual factors updated each scan
+    # ── Visual panel data (populated each scan, serialised via /api/status) ──
+    "zones_ob":     [],  # last 6 unmitigated order blocks   {type,high,low}
+    "zones_fvg":    [],  # last 6 unfilled FVGs              {type,high,low,pips}
+    "zones_brk":    [],  # last 4 breaker blocks             {type,high,low}
+    "zones_bpr":    [],  # last 4 balanced price ranges      {type,high,low}
+    "zones_sweeps": [],  # last 4 liquidity sweeps           {type,level,bars_ago}
+    "zones_induct": [],  # last 3 inducement levels          {type,price,dist_pips}
+    "zones_gaps":   [],  # last 3 opening gaps               {kind,high,low,pips}
 }
 
 active_signals:  list[dict] = []
@@ -1973,6 +1981,15 @@ def bot_loop():
             state["ipda"]           = ipda
             state["smt_divergence"] = smt_div
             sr_cache = sr
+
+            # ── Populate visual panel data ─────────────────────────────────
+            state["zones_ob"]     = [{"type": z["type"], "high": z["high"], "low": z["low"]} for z in obs[-6:]]
+            state["zones_fvg"]    = [{"type": z["type"], "high": z["top"],  "low": z["bottom"], "pips": round(z.get("size_pips", 0), 1)} for z in fvgs[-6:]]
+            state["zones_brk"]    = [{"type": z["type"], "high": z["high"], "low": z["low"]} for z in breakers[-4:]]
+            state["zones_bpr"]    = [{"type": "BPR",     "high": z["top"],  "low": z["bottom"]} for z in bprs[-4:]]
+            state["zones_sweeps"] = [{"type": z["type"], "level": z["level"], "bars_ago": z["bars_ago"]} for z in sweeps[-4:]]
+            state["zones_induct"] = [{"type": z["type"], "price": z["price"], "dist_pips": z["dist_pips"]} for z in inducements[-3:]]
+            state["zones_gaps"]   = [{"kind": z.get("kind", "GAP"), "high": z["top"], "low": z["bottom"], "pips": round(z.get("size_pips", 0), 1)} for z in gaps[-3:]]
 
             # ── Contextual confluence meter ────────────────────────────────
             bias_ok = bias in ("BULLISH", "BEARISH")

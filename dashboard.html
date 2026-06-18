@@ -344,6 +344,45 @@
   .smt-divg-row.none    { background: rgba(23,23,40,.5);   border: 1px solid var(--border);       color: var(--dim); }
   .smt-divg-icon { font-size: 10px; }
 
+  /* ZONE MAP */
+  .zone-map-svg { display:block; width:100%; border-radius:3px; background:rgba(6,6,15,.6); border:1px solid var(--border); }
+  .zone-map-legend { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+  .zone-legend-item { display:flex; align-items:center; gap:3px; font-size:7.5px; color:var(--dim); }
+  .zone-legend-dot { width:7px; height:7px; border-radius:1.5px; flex-shrink:0; }
+
+  /* LIQUIDITY MAP */
+  .liq-section-hdr { font-size:7.5px; letter-spacing:1.5px; margin-bottom:4px; font-weight:700; }
+  .liq-row { display:flex; align-items:center; justify-content:space-between; padding:3px 6px; border-radius:3px; margin-bottom:2px; font-size:8px; gap:4px; }
+  .liq-row.bsl { background:rgba(255,69,96,.06);  border:1px solid rgba(255,69,96,.14); }
+  .liq-row.ssl { background:rgba(0,217,126,.06);  border:1px solid rgba(0,217,126,.14); }
+  .liq-row.ind { background:rgba(255,181,71,.05); border:1px solid rgba(255,181,71,.13); }
+  .liq-price { font-variant-numeric:tabular-nums; font-weight:600; }
+  .liq-dist  { font-size:7.5px; color:var(--dim); }
+  .liq-bars  { font-size:7px;   color:var(--border); }
+  .liq-type  { font-size:7px; letter-spacing:1px; font-weight:700; min-width:22px; }
+  .liq-type.bsl { color:var(--r); }
+  .liq-type.ssl { color:var(--g); }
+  .liq-type.ind { color:var(--a); }
+  .liq-divider { display:flex; align-items:center; gap:5px; margin:5px 0; }
+  .liq-divider-line  { flex:1; height:1px; background:var(--border); }
+  .liq-divider-price { font-size:8px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--text); }
+
+  /* OPENING GAPS */
+  .gap-row { padding:5px 7px; border-radius:3px; margin-bottom:4px; }
+  .gap-row.nwog { background:rgba(78,168,255,.06);   border:1px solid rgba(78,168,255,.14); }
+  .gap-row.ndog { background:rgba(167,139,250,.06);  border:1px solid rgba(167,139,250,.14); }
+  .gap-row-hdr  { display:flex; justify-content:space-between; align-items:center; margin-bottom:3px; }
+  .gap-type     { font-size:8px; font-weight:700; letter-spacing:1px; }
+  .gap-type.nwog { color:var(--b); }
+  .gap-type.ndog { color:var(--p); }
+  .gap-pips  { font-size:7.5px; color:var(--dim); }
+  .gap-prices { display:flex; justify-content:space-between; font-size:8px; font-variant-numeric:tabular-nums; margin-bottom:4px; }
+  .gap-price-top { color:var(--r); }
+  .gap-price-bot { color:var(--g); }
+  .gap-track { height:3px; background:var(--border); border-radius:2px; position:relative; overflow:visible; }
+  .gap-fill  { height:100%; border-radius:2px; }
+  .gap-marker { position:absolute; top:-2px; width:2px; height:7px; background:var(--text); border-radius:1px; transform:translateX(-50%); }
+
   /* IPDA PANEL */
   .ipda-row { margin-bottom: 7px; }
   .ipda-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
@@ -584,12 +623,24 @@
       <div id="sr-list"></div>
     </div>
     <div class="right-sec">
+      <div class="sec-hdr">ZONE MAP</div>
+      <div id="zone-map-panel"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
+    </div>
+    <div class="right-sec">
       <div class="sec-hdr">IPDA LOOKBACK</div>
       <div id="ipda-list"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
     </div>
     <div class="right-sec">
+      <div class="sec-hdr">LIQUIDITY MAP</div>
+      <div id="liq-map-panel"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
+    </div>
+    <div class="right-sec">
       <div class="sec-hdr">SMT PAIRS</div>
       <div id="smt-panel"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
+    </div>
+    <div class="right-sec">
+      <div class="sec-hdr">OPENING GAPS</div>
+      <div id="gaps-panel"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
     </div>
   </div>
 
@@ -1373,6 +1424,194 @@ function renderSmtPanel(statusData) {
   el.innerHTML = html || `<div style="color:var(--dim);font-size:9px">No pairs configured</div>`;
 }
 
+// ── ZONE MAP ──────────────────────────────────────────────────────
+function renderZoneMap(data) {
+  const el = document.getElementById("zone-map-panel");
+  if (!el) return;
+
+  const cp = data?.current_price?.mid;
+  if (!data?.connected || !cp) {
+    el.innerHTML = `<div style="color:var(--dim);font-size:9px">Connect bot to view</div>`;
+    return;
+  }
+
+  const obs  = data.zones_ob  || [];
+  const fvgs = data.zones_fvg || [];
+  const brks = data.zones_brk || [];
+  const bprs = data.zones_bpr || [];
+
+  if (!obs.length && !fvgs.length && !brks.length && !bprs.length) {
+    el.innerHTML = `<div style="color:var(--dim);font-size:9px">No active zones detected</div>`;
+    return;
+  }
+
+  // Collect all bands with a normalised high/low
+  const bands = [
+    ...obs.map(z  => ({ ...z, cat:"OB"  })),
+    ...fvgs.map(z => ({ ...z, cat:"FVG" })),
+    ...brks.map(z => ({ ...z, cat:"BRK" })),
+    ...bprs.map(z => ({ ...z, cat:"BPR" })),
+  ];
+
+  const allP = [cp, ...bands.flatMap(b => [b.high, b.low])];
+  const pMin = Math.min(...allP);
+  const pMax = Math.max(...allP);
+  const pad  = Math.max((pMax - pMin) * 0.18, cp * 0.0008);
+  const lo   = pMin - pad, hi = pMax + pad, rng = hi - lo;
+
+  const W = 220, H = 160, barsX = 4, labX = W - 66, chartW = labX - barsX - 3;
+  const py = p => H * (1 - (p - lo) / rng);
+
+  const COLS = {
+    BULLISH_OB:      { fill:"rgba(0,217,126,.14)",  stroke:"#00d97e", label:"B·OB",  lc:"#00d97e" },
+    BEARISH_OB:      { fill:"rgba(255,69,96,.12)",   stroke:"#ff4560", label:"S·OB",  lc:"#ff4560" },
+    BULLISH_FVG:     { fill:"rgba(255,181,71,.11)",  stroke:"#ffb547", label:"FVG↑",  lc:"#ffb547" },
+    BEARISH_FVG:     { fill:"rgba(255,181,71,.11)",  stroke:"#ffb547", label:"FVG↓",  lc:"#ffb547" },
+    BULLISH_BREAKER: { fill:"rgba(78,168,255,.13)",  stroke:"#4ea8ff", label:"BRK↑",  lc:"#4ea8ff" },
+    BEARISH_BREAKER: { fill:"rgba(255,69,96,.15)",   stroke:"#ff4560", label:"BRK↓",  lc:"#ff4560" },
+    BPR:             { fill:"rgba(167,139,250,.12)", stroke:"#a78bfa", label:"BPR",   lc:"#a78bfa" },
+  };
+
+  let svg = "";
+  for (const b of bands) {
+    const col = COLS[b.type] || COLS[b.cat] || { fill:"rgba(100,100,150,.1)", stroke:"#888", label:"ZONE", lc:"#888" };
+    const y1  = py(b.high), y2 = py(b.low), h = Math.max(y2 - y1, 2.5), mid = y1 + h / 2;
+    svg += `<rect x="${barsX}" y="${y1.toFixed(1)}" width="${chartW}" height="${h.toFixed(1)}" fill="${col.fill}" stroke="${col.stroke}" stroke-width="0.7" rx="1.5"/>`;
+    svg += `<text x="${labX+2}" y="${(mid+3).toFixed(1)}" fill="${col.lc}" font-size="7.5" font-family="monospace" font-weight="600">${col.label}</text>`;
+  }
+
+  // Current price dashed line
+  const cpY = py(cp).toFixed(1);
+  const digs = data.current_price?.digits || 5;
+  svg += `<line x1="${barsX}" y1="${cpY}" x2="${labX}" y2="${cpY}" stroke="#c8d3e6" stroke-width="1.3" stroke-dasharray="4,2.5"/>`;
+  svg += `<text x="${labX+2}" y="${(parseFloat(cpY)+3).toFixed(1)}" fill="#c8d3e6" font-size="7" font-weight="700" font-family="monospace">▶${cp.toFixed(digs)}</text>`;
+
+  const legendItems = [
+    {col:"#00d97e",label:"B·OB"},{col:"#ff4560",label:"S·OB"},
+    {col:"#ffb547",label:"FVG"}, {col:"#a78bfa",label:"BPR"},
+    {col:"#4ea8ff",label:"BRK"},
+  ];
+
+  el.innerHTML = `
+    <svg class="zone-map-svg" viewBox="0 0 ${W} ${H}" height="${H}" preserveAspectRatio="none">${svg}</svg>
+    <div class="zone-map-legend">
+      ${legendItems.map(l=>`<span class="zone-legend-item"><span class="zone-legend-dot" style="background:${l.col}"></span>${l.label}</span>`).join("")}
+    </div>`;
+}
+
+// ── LIQUIDITY MAP ─────────────────────────────────────────────────
+function renderLiqMap(data) {
+  const el = document.getElementById("liq-map-panel");
+  if (!el) return;
+
+  if (!data?.connected) {
+    el.innerHTML = `<div style="color:var(--dim);font-size:9px">Connect bot to view</div>`;
+    return;
+  }
+
+  const cp     = data?.current_price?.mid;
+  const digs   = data?.current_price?.digits || 5;
+  const sweeps = data?.zones_sweeps || [];
+  const induct = data?.zones_induct || [];
+
+  if (!cp || (!sweeps.length && !induct.length)) {
+    el.innerHTML = `<div style="color:var(--dim);font-size:9px">No liquidity events</div>`;
+    return;
+  }
+
+  // Detect pip size from digits
+  const pip = digs >= 4 ? 0.0001 : 0.01;
+
+  const bsl      = sweeps.filter(s => s.type === "BSL_SWEEP");
+  const ssl      = sweeps.filter(s => s.type === "SSL_SWEEP");
+  const indAbove = induct.filter(i => i.price > cp);
+  const indBelow = induct.filter(i => i.price <= cp);
+
+  const mkRow = (price, pip_dist, meta, cls, typeCls, typeLabel) => `
+    <div class="liq-row ${cls}">
+      <span class="liq-type ${typeCls}">${typeLabel}</span>
+      <span class="liq-price">${price.toFixed(digs)}</span>
+      <span class="liq-dist">${pip_dist.toFixed(1)}p</span>
+      <span class="liq-bars">${meta}</span>
+    </div>`;
+
+  let html = "";
+
+  if (bsl.length || indAbove.length) {
+    html += `<div class="liq-section-hdr" style="color:var(--r)">▲ ABOVE — BUY SIDE</div>`;
+    for (const s of bsl)      html += mkRow(s.level, Math.abs(s.level-cp)/pip, `${s.bars_ago}b ago`, "bsl","bsl","BSL");
+    for (const i of indAbove) html += mkRow(i.price, Math.abs(i.price-cp)/pip, `${i.dist_pips.toFixed(1)}p`, "ind","ind","IND");
+  }
+
+  html += `<div class="liq-divider">
+    <div class="liq-divider-line"></div>
+    <div class="liq-divider-price">▶ ${cp.toFixed(digs)}</div>
+    <div class="liq-divider-line"></div>
+  </div>`;
+
+  if (ssl.length || indBelow.length) {
+    html += `<div class="liq-section-hdr" style="color:var(--g)">▼ BELOW — SELL SIDE</div>`;
+    for (const s of ssl)      html += mkRow(s.level, Math.abs(s.level-cp)/pip, `${s.bars_ago}b ago`, "ssl","ssl","SSL");
+    for (const i of indBelow) html += mkRow(i.price, Math.abs(i.price-cp)/pip, `${i.dist_pips.toFixed(1)}p`, "ind","ind","IND");
+  }
+
+  el.innerHTML = html || `<div style="color:var(--dim);font-size:9px">No recent sweeps</div>`;
+}
+
+// ── OPENING GAPS ──────────────────────────────────────────────────
+function renderGapsPanel(data) {
+  const el = document.getElementById("gaps-panel");
+  if (!el) return;
+
+  if (!data?.connected) {
+    el.innerHTML = `<div style="color:var(--dim);font-size:9px">Connect bot to view</div>`;
+    return;
+  }
+
+  const gaps = data?.zones_gaps || [];
+  const cp   = data?.current_price?.mid;
+  const digs = data?.current_price?.digits || 5;
+
+  if (!gaps.length) {
+    el.innerHTML = `<div style="color:var(--dim);font-size:9px">No active gaps</div>`;
+    return;
+  }
+
+  let html = "";
+  for (const g of gaps) {
+    const isNWOG  = g.kind?.includes("WEEK") || g.kind === "NWOG";
+    const cls     = isNWOG ? "nwog" : "ndog";
+    const label   = isNWOG ? "NWOG" : "NDOG";
+    const color   = isNWOG ? "var(--b)" : "var(--p)";
+
+    let pct = null;
+    const above = cp !== undefined && cp > g.high;
+    const inside = cp !== undefined && cp >= g.low && cp <= g.high;
+    if (inside) pct = ((cp - g.low) / (g.high - g.low)) * 100;
+
+    const statusText  = inside ? "INSIDE" : above ? "ABOVE" : "BELOW";
+    const statusColor = inside ? "var(--a)" : above ? "var(--r)" : "var(--g)";
+
+    html += `
+    <div class="gap-row ${cls}">
+      <div class="gap-row-hdr">
+        <span class="gap-type ${cls}">${label}</span>
+        <span style="font-size:7.5px;color:${statusColor};font-weight:700">${statusText}</span>
+        <span class="gap-pips">${g.pips ? g.pips.toFixed(1)+"p" : ""}</span>
+      </div>
+      <div class="gap-prices">
+        <span class="gap-price-top">↑ ${g.high.toFixed(digs)}</span>
+        <span class="gap-price-bot">↓ ${g.low.toFixed(digs)}</span>
+      </div>
+      <div class="gap-track">
+        ${inside ? `<div class="gap-fill" style="width:${pct.toFixed(0)}%;background:${color}"></div><div class="gap-marker" style="left:${pct.toFixed(0)}%"></div>` : ""}
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
 // ── FETCH ─────────────────────────────────────────────────────────
 async function fetchStatus() {
   try {
@@ -1990,6 +2229,9 @@ async function refresh() {
     await Promise.all(promises);
   }
   renderSmtPanel(status);
+  renderZoneMap(status);
+  renderLiqMap(status);
+  renderGapsPanel(status);
 }
 
 // ── INIT ──────────────────────────────────────────────────────────
