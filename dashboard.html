@@ -300,6 +300,29 @@
   .sr-bars { display: flex; gap: 2px; align-items: flex-end; }
   .sr-bar { width: 4px; border-radius: 1px; }
 
+  /* SMT PAIRS PANEL */
+  .smt-active-box { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; }
+  .smt-active-box.confirmed { border-color: rgba(0,217,126,.3); background: rgba(0,217,126,.04); }
+  .smt-active-label { font-size: 8px; color: var(--dim); letter-spacing: 1px; margin-bottom: 5px; }
+  .smt-active-pair { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+  .smt-sym-a { font-size: 11px; font-weight: 700; color: var(--text); }
+  .smt-arrow { color: var(--dim); font-size: 10px; }
+  .smt-sym-b { font-size: 11px; font-weight: 700; color: var(--b); }
+  .smt-status { font-size: 8px; font-weight: 700; padding: 2px 7px; border-radius: 3px; letter-spacing: 1px; }
+  .smt-status.hit  { background: rgba(0,217,126,.12); color: var(--g); }
+  .smt-status.miss { background: var(--surface); color: var(--dim); }
+  .smt-all-hdr { font-size: 8px; color: var(--dim); letter-spacing: 1px; margin-bottom: 5px; }
+  .smt-row { display: flex; align-items: center; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid rgba(23,23,40,.6); }
+  .smt-row:last-child { border-bottom: none; }
+  .smt-row-pair { display: flex; align-items: center; gap: 4px; font-size: 9px; }
+  .smt-row-a { color: var(--muted); }
+  .smt-row-arr { color: var(--dim); font-size: 8px; }
+  .smt-row-b { color: var(--b); }
+  .smt-row-src { font-size: 7px; padding: 1px 5px; border-radius: 2px; }
+  .smt-row-src.resolved  { background: rgba(78,168,255,.1); color: var(--b); border: 1px solid rgba(78,168,255,.15); }
+  .smt-row-src.fallback  { background: rgba(255,181,71,.08); color: var(--a); border: 1px solid rgba(255,181,71,.15); }
+  .smt-row-src.config    { background: rgba(100,100,120,.15); color: var(--dim); border: 1px solid var(--border); }
+
   /* IPDA PANEL */
   .ipda-row { margin-bottom: 7px; }
   .ipda-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
@@ -543,6 +566,10 @@
       <div class="sec-hdr">IPDA LOOKBACK</div>
       <div id="ipda-list"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
     </div>
+    <div class="right-sec">
+      <div class="sec-hdr">SMT PAIRS</div>
+      <div id="smt-panel"><div style="color:var(--dim);font-size:9px">Connect bot to view</div></div>
+    </div>
   </div>
 
 </div>
@@ -655,9 +682,12 @@ async function connectAccount() {
       await refresh();
       await loadSettings();
 
-      // New account = new broker = symbol list must be refetched
+      // New account = new broker = symbol list + SMT pairs must be refetched
       _symLoaded = false;
+      _smtPairs  = null;
       loadSymbols();
+      await fetchSmtPairs();
+      renderSmtPanel(null);
 
     } else {
       alert("Connection failed: " + (data.error || "check credentials"));
@@ -1090,6 +1120,103 @@ const DEMO_EQUITY = Array.from({length:60},(_,i)=>({
   time:new Date(Date.now()-(60-i)*60000).toISOString(),
   equity:10000+Math.sin(i*0.35)*150+i*5.5,
 }));
+
+// ── SMT PAIRS ─────────────────────────────────────────────────────
+let _smtPairs = null;
+
+async function fetchSmtPairs() {
+  try {
+    const r = await fetch(BASE + "/api/smt-pairs", { signal: AbortSignal.timeout(2500) });
+    if (r.ok) { _smtPairs = await r.json(); }
+  } catch {}
+}
+
+function renderSmtPanel(statusData) {
+  const el = document.getElementById("smt-panel");
+  if (!el) return;
+
+  const pairs    = _smtPairs;
+  const resolved = pairs?.resolved || {};
+  const config   = pairs?.configured || {};
+  const source   = pairs?.source || "disconnected";
+  const sym      = _activeSym || (statusData && statusData.symbol) || null;
+  const divActive = !!(statusData && statusData.smt_divergence);
+
+  // Disconnected / no data state
+  if (source === "disconnected" || !Object.keys(resolved).length && !Object.keys(config).length) {
+    el.innerHTML = `<div style="color:var(--dim);font-size:9px">Connect bot to view</div>`;
+    return;
+  }
+
+  let html = "";
+
+  // ── Active symbol block ──────────────────────────────────────────
+  const corrSym = sym
+    ? (resolved[sym] || null)
+    : null;
+
+  if (sym) {
+    const confirmed = divActive && !!corrSym;
+    html += `
+    <div class="smt-active-box${confirmed ? " confirmed" : ""}">
+      <div class="smt-active-label">ACTIVE SYMBOL</div>
+      <div class="smt-active-pair">
+        <span class="smt-sym-a">${sym}</span>
+        <span class="smt-arrow">→</span>
+        <span class="smt-sym-b">${corrSym || "—"}</span>
+      </div>
+      <span class="smt-status ${divActive ? "hit" : "miss"}">${divActive ? "✓ DIVERGENCE" : "— NONE"}</span>
+    </div>`;
+  }
+
+  // ── Full resolved pairs list ─────────────────────────────────────
+  const entries = Object.entries(resolved);
+  const configEntries = Object.entries(config);
+
+  if (entries.length) {
+    html += `<div class="smt-all-hdr">RESOLVED FROM BROKER</div>`;
+    // Deduplicate: only show unique a→b pairs (not both directions)
+    const seen = new Set();
+    const unique = entries.filter(([a, b]) => {
+      const key = [a, b].sort().join("|");
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    html += unique.map(([a, b]) => {
+      // Check if it was a direct match (exact candidate found) or fallback
+      // We detect fallback: if suffix of a != start of difference between b and base_b
+      const isActive = sym === a;
+      return `
+      <div class="smt-row" style="${isActive ? "opacity:1" : "opacity:.65"}">
+        <div class="smt-row-pair">
+          <span class="smt-row-a">${a}</span>
+          <span class="smt-row-arr">→</span>
+          <span class="smt-row-b">${b}</span>
+        </div>
+        <span class="smt-row-src resolved">BROKER</span>
+      </div>`;
+    }).join("");
+  } else if (configEntries.length) {
+    // Fallback: show raw config pairs with a note
+    html += `<div class="smt-all-hdr">CONFIG PAIRS (connect to resolve)</div>`;
+    const seen = new Set();
+    html += configEntries.filter(([a, b]) => {
+      const key = [a, b].sort().join("|");
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    }).map(([a, b]) => `
+      <div class="smt-row">
+        <div class="smt-row-pair">
+          <span class="smt-row-a">${a}</span>
+          <span class="smt-row-arr">→</span>
+          <span class="smt-row-b">${b}</span>
+        </div>
+        <span class="smt-row-src config">CONFIG</span>
+      </div>`).join("");
+  }
+
+  el.innerHTML = html || `<div style="color:var(--dim);font-size:9px">No pairs configured</div>`;
+}
 
 // ── FETCH ─────────────────────────────────────────────────────────
 async function fetchStatus() {
@@ -1689,6 +1816,7 @@ async function closeTrade(ticket) {
 }
 
 // ── MAIN LOOP ─────────────────────────────────────────────────────
+let _smtFetchCounter = 0;
 async function refresh() {
   const [status,hist,equity]=await Promise.all([fetchStatus(),fetchHistory(),fetchEquity()]);
   tradeHistory=hist; equityCurve=equity;
@@ -1696,6 +1824,13 @@ async function refresh() {
   if (currentTab==="history")     renderHistory();
   if (currentTab==="chart")       renderEquityChart();
   if (currentTab==="confluences") renderConfluences(status);
+
+  // Fetch SMT pairs once on first successful live connection, then every ~60s
+  _smtFetchCounter++;
+  if (isLive && status.connected && (_smtPairs === null || _smtFetchCounter % 12 === 0)) {
+    await fetchSmtPairs();
+  }
+  renderSmtPanel(status);
 }
 
 // ── INIT ──────────────────────────────────────────────────────────
