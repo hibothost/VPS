@@ -177,6 +177,7 @@ state = {
     "cisd":           False,
     "ipda":           {},
     "smt_divergence": False,
+    "smt_pair_cache": {},   # resolved broker-symbol → broker-symbol (built after connect)
     "current_price":  {},   # {symbol, bid, ask, mid, digits} — updated every scan
     "ctx_confluences": [],  # [{name, active, hint}] — contextual factors updated each scan
 }
@@ -311,6 +312,61 @@ def _query_mt5_close(ticket: int):
 #  MT5 CONNECTION
 # ══════════════════════════════════════════════════════════════
 
+def _resolve_smt_pairs():
+    """
+    Build a runtime cache mapping every broker symbol → its SMT correlated broker symbol.
+
+    The CONFIG smt_pairs uses bare names like "EURUSD" → "GBPUSD".  Brokers often
+    add a suffix (.m, .a, .pro, .raw) or prefix (m.) to every symbol.  This function
+    fetches the live symbol list from MT5, detects the suffix/prefix used for each
+    configured base pair, and constructs the full broker name for the correlated pair.
+
+    Examples
+    --------
+    Broker symbols: EURUSD.m, GBPUSD.m, USDJPY.m, USDCHF.m …
+    Config:  EURUSD → GBPUSD
+    Result:  state["smt_pair_cache"]["EURUSD.m"] = "GBPUSD.m"
+
+    Broker symbols: EURUSD, GBPUSD (no suffix)
+    Result:  state["smt_pair_cache"]["EURUSD"] = "GBPUSD"
+    """
+    try:
+        all_syms = mt5.symbols_get()
+        if not all_syms:
+            log.warning("_resolve_smt_pairs: no symbols returned from MT5")
+            return
+
+        names_set  = {s.name for s in all_syms}
+        names_list = list(names_set)
+        base_pairs = CONFIG.get("smt_pairs", {})
+        resolved   = {}
+
+        for base_a, base_b in base_pairs.items():
+            # Find every broker symbol that contains the base pair name
+            matches_a = [n for n in names_list if base_a.upper() in n.upper()]
+            for sym_a in matches_a:
+                # Work out the prefix and suffix the broker added
+                idx    = sym_a.upper().find(base_a.upper())
+                prefix = sym_a[:idx]               # e.g. ""  or "m."
+                suffix = sym_a[idx + len(base_a):] # e.g. ".m" or ".pro"
+
+                # Build the expected broker name for the correlated pair
+                candidate = prefix + base_b + suffix
+                if candidate in names_set:
+                    resolved[sym_a] = candidate
+                else:
+                    # Fallback: any broker symbol that contains base_b
+                    fallbacks = [n for n in names_list if base_b.upper() in n.upper()]
+                    if fallbacks:
+                        resolved[sym_a] = min(fallbacks, key=len)
+
+        state["smt_pair_cache"] = resolved
+        log.info(f"SMT pairs resolved ({len(resolved)} entries): {resolved}")
+
+    except Exception as exc:
+        log.warning(f"_resolve_smt_pairs failed: {exc}")
+
+
 def connect_mt5(login=None, password=None, server=None) -> bool:
     """
     Connect to MT5.  When credentials are supplied they are passed directly
@@ -348,6 +404,7 @@ def connect_mt5(login=None, password=None, server=None) -> bool:
     state["error"]     = None
     state["account"]   = _fmt_account(acct)
     log.info(f"MT5 connected │ {acct.company} │ #{acct.login} │ {acct.balance:.2f} {acct.currency}")
+    _resolve_smt_pairs()
     return True
 
 
@@ -1127,8 +1184,14 @@ def detect_smt_divergence(symbol: str, df: pd.DataFrame, bias: str) -> bool:
     Smart Money Tool: two correlated instruments diverge at a swing —
     one makes a new extreme while its correlated pair fails to confirm.
     EURUSD new high + GBPUSD lower high → bearish SMT (institutions selling).
+
+    Uses state["smt_pair_cache"] (built at connect time from the live broker symbol
+    list) so broker-specific suffixes/prefixes like EURUSD.m → GBPUSD.m are handled
+    automatically.  Falls back to the bare CONFIG["smt_pairs"] names if the cache
+    has no entry for this symbol (e.g. on a vanilla broker with no suffix).
     """
-    corr = CONFIG.get("smt_pairs", {}).get(symbol)
+    corr = state.get("smt_pair_cache", {}).get(symbol) \
+        or CONFIG.get("smt_pairs", {}).get(symbol)
     if not corr or not state["connected"]:
         return False
     try:
@@ -2191,6 +2254,17 @@ def api_symbols():
         return jsonify({"symbols": [], "grouped": {}, "error": str(exc), "source": "error"})
 
 
+@app.route("/api/smt-pairs")
+def api_smt_pairs():
+    """Return the resolved SMT correlated pairs for the connected broker."""
+    cache = state.get("smt_pair_cache", {})
+    return jsonify({
+        "configured": CONFIG.get("smt_pairs", {}),
+        "resolved":   cache,
+        "source":     "broker" if cache else ("disconnected" if not state["connected"] else "pending"),
+    })
+
+
 @app.route("/api/broker", methods=["GET", "POST"])
 def api_broker():
     """Get or set MT5 broker login credentials and (re)connect."""
@@ -2235,10 +2309,11 @@ def api_reconnect():
 @app.route("/api/logout", methods=["POST"])
 def api_logout():
     """Disconnect from MT5 and clear stored credentials."""
-    state["running"]   = False
-    state["connected"] = False
-    state["account"]   = {}
-    state["error"]     = "Logged out. Connect via the dashboard."
+    state["running"]        = False
+    state["connected"]      = False
+    state["account"]        = {}
+    state["smt_pair_cache"] = {}
+    state["error"]          = "Logged out. Connect via the dashboard."
     CONFIG["login"]    = None
     CONFIG["password"] = None
     CONFIG["server"]   = None
