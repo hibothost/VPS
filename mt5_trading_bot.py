@@ -79,6 +79,14 @@ CONFIG = {
     "atr_sl_multiplier": 0.5,    # SL ≥ this many ATRs beyond invalidation swing
     "tp_pullback_pips":  3.0,    # Pull TP back this many pips from structural obstacle
 
+    # ── Partial take-profit / runner system
+    # When enabled: close partial_tp_pct% at TP1 (nearest structure), then move SL
+    # to break-even on the runner; MT5's TP order is set to TP2 (next level) so
+    # the runner closes automatically if price continues.
+    "partial_tp":                False,  # Enable partial close + BE trail on runner
+    "partial_tp_pct":            50,     # % of position to close at TP1
+    "partial_tp_be_buffer_pips": 2,      # Buffer pips beyond entry for the BE SL on runner
+
     # ── Trade monitoring & dynamic exit
     "bias_exit":       True,   # Close trade if HTF bias reverses
     "bos_exit":        True,   # Close trade on BOS/CHoCH against direction
@@ -202,6 +210,7 @@ state = {
 
 active_signals:  list[dict] = []
 open_trades:     list[dict] = []
+_trade_meta:     dict       = {}   # ticket → {tp1, tp2, partial_done} for partial TP system
 trade_history:   list[dict] = []
 sr_cache:        list[dict] = []
 
@@ -1319,6 +1328,88 @@ def find_structural_sl(
         return round(entry + max(CONFIG["sl_buffer_pips"] * pip, atr), 5)
 
 
+def _structural_tp_candidates(
+    direction: str,
+    entry: float,
+    sl_price: float,
+    sh: list[dict],
+    sl_swings: list[dict],
+    sr: list[dict],
+    obs: list[dict],
+    fvgs: list[dict],
+    bprs: list[dict],
+    ipda: dict,
+    pip: float,
+) -> list[float]:
+    """
+    Return ALL structural TP candidates sorted nearest-first.
+    BUY → ascending (smallest above entry first).
+    SELL → descending (largest below entry first).
+    """
+    risk       = abs(entry - sl_price)
+    min_reward = risk * CONFIG.get("min_rr_dynamic", 1.0)
+    pullback   = CONFIG.get("tp_pullback_pips", 3.0) * pip
+    candidates: list[float] = []
+
+    if direction == "BUY":
+        floor = entry + min_reward
+        for s in sh:
+            if s["price"] > floor:
+                candidates.append(s["price"] - pullback)
+        for lvl in sr:
+            if lvl["type"] == "RESISTANCE" and lvl["price"] > floor:
+                candidates.append(lvl["price"] - pullback)
+        for ob in obs:
+            if ob["type"] == "BEARISH_OB":
+                target = ob.get("low", ob.get("bottom", 0))
+                if target > floor:
+                    candidates.append(target - pullback)
+        for fvg in fvgs:
+            if fvg["type"] == "BEARISH_FVG":
+                mid = (fvg.get("top", fvg.get("high", 0)) + fvg.get("bottom", fvg.get("low", 0))) / 2
+                if mid > floor:
+                    candidates.append(mid - pullback)
+        for bpr in bprs:
+            mid = (bpr.get("high", bpr.get("top", 0)) + bpr.get("low", bpr.get("bottom", 0))) / 2
+            if mid > floor:
+                candidates.append(mid - pullback)
+        for _, data in ipda.items():
+            lvl = data.get("high", 0)
+            if lvl > floor:
+                candidates.append(lvl - pullback)
+        valid = sorted(set(round(c, 5) for c in candidates if c > entry))
+        return valid  # ascending: TP1 = valid[0], TP2 = valid[1]
+
+    else:  # SELL — nearest support is the HIGHEST value below entry
+        ceiling = entry - min_reward
+        for s in sl_swings:
+            if s["price"] < ceiling:
+                candidates.append(s["price"] + pullback)
+        for lvl in sr:
+            if lvl["type"] == "SUPPORT" and lvl["price"] < ceiling:
+                candidates.append(lvl["price"] + pullback)
+        for ob in obs:
+            if ob["type"] == "BULLISH_OB":
+                target = ob.get("high", ob.get("top", float("inf")))
+                if target < ceiling:
+                    candidates.append(target + pullback)
+        for fvg in fvgs:
+            if fvg["type"] == "BULLISH_FVG":
+                mid = (fvg.get("top", fvg.get("high", 0)) + fvg.get("bottom", fvg.get("low", 0))) / 2
+                if mid < ceiling:
+                    candidates.append(mid + pullback)
+        for bpr in bprs:
+            mid = (bpr.get("high", bpr.get("top", 0)) + bpr.get("low", bpr.get("bottom", 0))) / 2
+            if mid < ceiling:
+                candidates.append(mid + pullback)
+        for _, data in ipda.items():
+            lvl = data.get("low", float("inf"))
+            if lvl < ceiling:
+                candidates.append(lvl + pullback)
+        valid = sorted(set(round(c, 5) for c in candidates if c < entry), reverse=True)
+        return valid  # descending: TP1 = valid[0], TP2 = valid[1]
+
+
 def find_structural_tp(
     direction: str,
     entry: float,
@@ -1332,91 +1423,10 @@ def find_structural_tp(
     ipda: dict,
     pip: float,
 ) -> float | None:
-    """
-    Aim TP at the NEAREST structural obstacle in the trade direction,
-    pulling back tp_pullback_pips to exit before the level rejects price.
-
-    Targets evaluated (nearest wins):
-      swing high/low · S&R resistance/support · opposing OBs
-      FVG midpoints  · BPR midpoints           · IPDA range highs/lows
-    """
-    risk       = abs(entry - sl_price)
-    min_reward = risk * CONFIG.get("min_rr_dynamic", 1.0)
-    pullback   = CONFIG.get("tp_pullback_pips", 3.0) * pip
-
-    candidates: list[float] = []
-
-    if direction == "BUY":
-        floor = entry + min_reward
-
-        for s in sh:
-            if s["price"] > floor:
-                candidates.append(s["price"] - pullback)
-
-        for lvl in sr:
-            if lvl["type"] == "RESISTANCE" and lvl["price"] > floor:
-                candidates.append(lvl["price"] - pullback)
-
-        for ob in obs:
-            if ob["type"] == "BEARISH_OB":
-                target = ob.get("low", ob.get("bottom", 0))
-                if target > floor:
-                    candidates.append(target - pullback)
-
-        for fvg in fvgs:
-            if fvg["type"] == "BEARISH_FVG":
-                mid = (fvg.get("top", fvg.get("high", 0)) + fvg.get("bottom", fvg.get("low", 0))) / 2
-                if mid > floor:
-                    candidates.append(mid - pullback)
-
-        for bpr in bprs:
-            mid = (bpr.get("high", bpr.get("top", 0)) + bpr.get("low", bpr.get("bottom", 0))) / 2
-            if mid > floor:
-                candidates.append(mid - pullback)
-
-        for _, data in ipda.items():
-            lvl = data.get("high", 0)
-            if lvl > floor:
-                candidates.append(lvl - pullback)
-
-        valid = [c for c in candidates if c > entry]
-        return round(min(valid), 5) if valid else None
-
-    else:  # SELL
-        ceiling = entry - min_reward
-
-        for s in sl_swings:
-            if s["price"] < ceiling:
-                candidates.append(s["price"] + pullback)
-
-        for lvl in sr:
-            if lvl["type"] == "SUPPORT" and lvl["price"] < ceiling:
-                candidates.append(lvl["price"] + pullback)
-
-        for ob in obs:
-            if ob["type"] == "BULLISH_OB":
-                target = ob.get("high", ob.get("top", float("inf")))
-                if target < ceiling:
-                    candidates.append(target + pullback)
-
-        for fvg in fvgs:
-            if fvg["type"] == "BULLISH_FVG":
-                mid = (fvg.get("top", fvg.get("high", 0)) + fvg.get("bottom", fvg.get("low", 0))) / 2
-                if mid < ceiling:
-                    candidates.append(mid + pullback)
-
-        for bpr in bprs:
-            mid = (bpr.get("high", bpr.get("top", 0)) + bpr.get("low", bpr.get("bottom", 0))) / 2
-            if mid < ceiling:
-                candidates.append(mid + pullback)
-
-        for _, data in ipda.items():
-            lvl = data.get("low", float("inf"))
-            if lvl < ceiling:
-                candidates.append(lvl + pullback)
-
-        valid = [c for c in candidates if c < entry]
-        return round(max(valid), 5) if valid else None
+    """Return the nearest structural TP level (TP1). None if no valid target found."""
+    lvls = _structural_tp_candidates(direction, entry, sl_price, sh, sl_swings,
+                                      sr, obs, fvgs, bprs, ipda, pip)
+    return lvls[0] if lvls else None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1615,23 +1625,24 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
                     miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
 
             if len(hit) >= CONFIG["min_confluence"]:
+                tp2_price = None
                 if CONFIG.get("dynamic_sl_tp", False) and df_ctx is not None:
                     atr      = calculate_atr(df_ctx, CONFIG.get("atr_period", 14))
                     sl_price = find_structural_sl("BUY", ask, sh, sl_swings, atr, pip)
-                    dyn_tp   = find_structural_tp("BUY", ask, sl_price, sh, sl_swings,
-                                                  sr, obs, fvgs, bprs, ipda, pip)
-                    if dyn_tp is not None and dyn_tp > ask:
-                        tp_price = dyn_tp
+                    lvls     = _structural_tp_candidates("BUY", ask, sl_price, sh, sl_swings,
+                                                         sr, obs, fvgs, bprs, ipda, pip)
+                    if lvls and lvls[0] > ask:
+                        tp_price  = lvls[0]
+                        tp2_price = lvls[1] if len(lvls) > 1 else None
                         hit.append("Dynamic SL/TP (structure-based)")
                     else:
-                        # No structural target found — fall back to fixed R:R
                         tp_price = ask + (ask - sl_price) * CONFIG["min_rr"]
                         hit.append("Dynamic SL / Fixed R:R fallback")
                 else:
                     sl_price = ol - buf
                     tp_price = ask + (ask - sl_price) * CONFIG["min_rr"]
                 signals.append(_build_signal("BUY", symbol, ask, sl_price, tp_price,
-                                            hit, miss, ob, is_kz, pip))
+                                            hit, miss, ob, is_kz, pip, tp2=tp2_price))
             else:
                 miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
 
@@ -1774,13 +1785,15 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
                     miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
 
             if len(hit) >= CONFIG["min_confluence"]:
+                tp2_price = None
                 if CONFIG.get("dynamic_sl_tp", False) and df_ctx is not None:
                     atr      = calculate_atr(df_ctx, CONFIG.get("atr_period", 14))
                     sl_price = find_structural_sl("SELL", bid, sh, sl_swings, atr, pip)
-                    dyn_tp   = find_structural_tp("SELL", bid, sl_price, sh, sl_swings,
-                                                  sr, obs, fvgs, bprs, ipda, pip)
-                    if dyn_tp is not None and dyn_tp < bid:
-                        tp_price = dyn_tp
+                    lvls     = _structural_tp_candidates("SELL", bid, sl_price, sh, sl_swings,
+                                                         sr, obs, fvgs, bprs, ipda, pip)
+                    if lvls and lvls[0] < bid:
+                        tp_price  = lvls[0]
+                        tp2_price = lvls[1] if len(lvls) > 1 else None
                         hit.append("Dynamic SL/TP (structure-based)")
                     else:
                         tp_price = bid - (sl_price - bid) * CONFIG["min_rr"]
@@ -1789,7 +1802,7 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
                     sl_price = oh + buf
                     tp_price = bid - (sl_price - bid) * CONFIG["min_rr"]
                 signals.append(_build_signal("SELL", symbol, bid, sl_price, tp_price,
-                                            hit, miss, ob, is_kz, pip))
+                                            hit, miss, ob, is_kz, pip, tp2=tp2_price))
             else:
                 miss.append(f"Score {len(hit)} < min {CONFIG['min_confluence']}")
 
@@ -1801,6 +1814,7 @@ def _build_signal(
     entry: float, sl: float, tp: float,
     hit: list[str], miss: list[str],
     ob: dict, is_kz: bool, pip: float,
+    tp2: float | None = None,
 ) -> dict:
     return {
         "id":         f"{direction}_{int(time.time())}",
@@ -1809,9 +1823,11 @@ def _build_signal(
         "entry":      round(entry, 5),
         "sl":         round(sl, 5),
         "tp":         round(tp, 5),
+        "tp2":        round(tp2, 5) if tp2 is not None else None,
         "risk_pips":  round(abs(entry - sl) / pip, 1),
         "rr":         round(abs(tp - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0,
         "dynamic_sl_tp": CONFIG.get("dynamic_sl_tp", False),
+        "partial_tp": CONFIG.get("partial_tp", False),
         "score":      len(hit),
         "confluence": {
             "hit":  hit,
@@ -1917,18 +1933,35 @@ def place_order(sig: dict) -> dict | None:
         "type_filling": get_filling_mode(symbol),
     }
 
+    # When partial TP is on: set MT5's TP to TP2 (runner target) so the runner
+    # auto-closes at the second structural level. Our loop handles TP1 partial close.
+    mt5_tp = sig["tp"]
+    if CONFIG.get("partial_tp", False) and sig.get("tp2") is not None:
+        mt5_tp = sig["tp2"]
+    req["tp"] = mt5_tp
+
     res = mt5.order_send(req)
     if res.retcode != mt5.TRADE_RETCODE_DONE:
         log.error(f"Order failed [{res.retcode}]: {res.comment}")
         return None
 
+    ticket = res.order
+    # Store TP1 / TP2 meta so monitor_open_trades can watch for partial close
+    _trade_meta[ticket] = {
+        "tp1":          sig["tp"],           # level where we partially close
+        "tp2":          sig.get("tp2"),      # MT5 TP / runner target
+        "partial_done": False,
+    }
+
     trade = {
-        "ticket":    res.order,
+        "ticket":    ticket,
         "symbol":    symbol,
         "direction": sig["direction"],
         "entry":     round(price, 5),
         "sl":        sig["sl"],
-        "tp":        sig["tp"],
+        "tp":        mt5_tp,
+        "tp1":       sig["tp"],
+        "tp2":       sig.get("tp2"),
         "lots":      lots,
         "pnl":       0.0,
         "status":    "OPEN",
@@ -1972,6 +2005,35 @@ def close_position(ticket: int) -> bool:
         "deviation":    20,
         "magic":        CONFIG["magic_number"],
         "comment":      "Bot close",
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": get_filling_mode(p.symbol),
+    }
+    res = mt5.order_send(req)
+    return res.retcode == mt5.TRADE_RETCODE_DONE
+
+
+def partial_close_position(ticket: int, pct: float = 50.0) -> bool:
+    """Close pct% of an open position's volume (for partial take-profit)."""
+    pos = mt5.positions_get(ticket=ticket)
+    if not pos:
+        return False
+    p    = pos[0]
+    t    = get_tick(p.symbol)
+    info = mt5.symbol_info(p.symbol)
+    if not t or not info:
+        return False
+    vol = round(p.volume * (pct / 100.0) / info.volume_step) * info.volume_step
+    vol = max(info.volume_min, min(p.volume, round(vol, 2)))
+    req = {
+        "action":       mt5.TRADE_ACTION_DEAL,
+        "symbol":       p.symbol,
+        "volume":       vol,
+        "type":         mt5.ORDER_TYPE_SELL if p.type == 0 else mt5.ORDER_TYPE_BUY,
+        "position":     ticket,
+        "price":        t.bid if p.type == 0 else t.ask,
+        "deviation":    20,
+        "magic":        CONFIG["magic_number"],
+        "comment":      f"Bot partial TP {pct:.0f}%",
         "type_time":    mt5.ORDER_TIME_GTC,
         "type_filling": get_filling_mode(p.symbol),
     }
@@ -2052,6 +2114,35 @@ def monitor_open_trades(ctx: dict, bias: str):
                     _modify_sl(ticket, p.symbol, be_price)
                     log.info(f"Trail BE: moved SL → {be_price:.5f} on #{ticket}")
 
+        # ── 4. Partial take-profit at TP1 → move SL to BE on runner ──
+        if not exit_reason and CONFIG.get("partial_tp", False):
+            meta = _trade_meta.get(ticket)
+            if meta and not meta.get("partial_done") and meta.get("tp1") is not None:
+                tp1 = meta["tp1"]
+                triggered = (direction == "BUY"  and p.price_current >= tp1) or \
+                            (direction == "SELL" and p.price_current <= tp1)
+                if triggered:
+                    pct = CONFIG.get("partial_tp_pct", 50)
+                    if partial_close_position(ticket, pct):
+                        meta["partial_done"] = True
+                        log.info(f"⚡ Partial TP {pct}%: closed {pct}% of #{ticket} at ~{tp1:.5f}")
+                        # Move SL to break-even + buffer so the runner is risk-free
+                        sym_info = mt5.symbol_info(p.symbol)
+                        digits   = sym_info.digits if sym_info else 5
+                        be_buf   = CONFIG.get("partial_tp_be_buffer_pips", 2) * pip
+                        if direction == "BUY":
+                            be_price = round(p.price_open - be_buf, digits)
+                            if p.sl == 0 or p.sl < be_price:
+                                _modify_sl(ticket, p.symbol, be_price)
+                                log.info(f"   Runner SL → BE {be_price:.5f} on #{ticket}")
+                        else:
+                            be_price = round(p.price_open + be_buf, digits)
+                            if p.sl == 0 or p.sl > be_price:
+                                _modify_sl(ticket, p.symbol, be_price)
+                                log.info(f"   Runner SL → BE {be_price:.5f} on #{ticket}")
+                    else:
+                        log.warning(f"   Partial close failed on #{ticket}")
+
         # ── Auto-close if exit condition met ─────────────────────
         if exit_reason:
             log.info(f"⚡ Auto-close #{ticket} ({direction} {p.symbol}): {exit_reason}")
@@ -2081,18 +2172,21 @@ def refresh_open_trades():
     _prev_open_tickets = cur_tickets
     open_trades = [
         {
-            "ticket":       p.ticket,
-            "symbol":       p.symbol,
-            "direction":    "BUY" if p.type == 0 else "SELL",
-            "entry":        round(p.price_open, 5),
-            "current":      round(p.price_current, 5),
-            "sl":           round(p.sl, 5),
-            "tp":           round(p.tp, 5),
-            "lots":         p.volume,
-            "pnl":          round(p.profit, 2),
-            "swap":         round(p.swap, 2),
-            "time":         datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
-            "comment":      p.comment,
+            "ticket":        p.ticket,
+            "symbol":        p.symbol,
+            "direction":     "BUY" if p.type == 0 else "SELL",
+            "entry":         round(p.price_open, 5),
+            "current":       round(p.price_current, 5),
+            "sl":            round(p.sl, 5),
+            "tp":            round(p.tp, 5),
+            "tp1":           _trade_meta.get(p.ticket, {}).get("tp1"),
+            "tp2":           _trade_meta.get(p.ticket, {}).get("tp2"),
+            "partial_done":  _trade_meta.get(p.ticket, {}).get("partial_done", False),
+            "lots":          p.volume,
+            "pnl":           round(p.profit, 2),
+            "swap":          round(p.swap, 2),
+            "time":          datetime.fromtimestamp(p.time, tz=timezone.utc).isoformat(),
+            "comment":       p.comment,
         }
         for p in bot_pos_map.values()
     ]
@@ -2324,17 +2418,24 @@ def api_status():
         # Embed live config so the dashboard always reflects what the bot is
         # actually running — no stale values after a restart
         "config": {
-            "risk_pct":            CONFIG.get("risk_pct", 1.0),
-            "min_rr":              CONFIG.get("min_rr", 2.0),
-            "max_trades":          CONFIG.get("max_trades", 3),
-            "min_confluence":      CONFIG.get("min_confluence", 3),
-            "fvg_min_pips":        CONFIG.get("fvg_min_pips", 2.0),
-            "scan_interval":       CONFIG.get("scan_interval", 60),
-            "trail_be_pips":       CONFIG.get("trail_be_pips", 20),
-            "trail_be_buffer_pips":CONFIG.get("trail_be_buffer_pips", 2),
-            "require_kill_zone":   CONFIG.get("require_kill_zone", False),
-            "symbol":              CONFIG.get("symbol", ""),
-            "active_strategies":   CONFIG.get("active_strategies", []),
+            "risk_pct":                  CONFIG.get("risk_pct", 1.0),
+            "min_rr":                    CONFIG.get("min_rr", 2.0),
+            "max_trades":                CONFIG.get("max_trades", 3),
+            "min_confluence":            CONFIG.get("min_confluence", 3),
+            "fvg_min_pips":              CONFIG.get("fvg_min_pips", 2.0),
+            "scan_interval":             CONFIG.get("scan_interval", 60),
+            "trail_be_pips":             CONFIG.get("trail_be_pips", 20),
+            "trail_be_buffer_pips":      CONFIG.get("trail_be_buffer_pips", 2),
+            "require_kill_zone":         CONFIG.get("require_kill_zone", False),
+            "symbol":                    CONFIG.get("symbol", ""),
+            "active_strategies":         CONFIG.get("active_strategies", []),
+            "dynamic_sl_tp":             CONFIG.get("dynamic_sl_tp", False),
+            "min_rr_dynamic":            CONFIG.get("min_rr_dynamic", 1.0),
+            "atr_sl_multiplier":         CONFIG.get("atr_sl_multiplier", 0.5),
+            "tp_pullback_pips":          CONFIG.get("tp_pullback_pips", 3.0),
+            "partial_tp":                CONFIG.get("partial_tp", False),
+            "partial_tp_pct":            CONFIG.get("partial_tp_pct", 50),
+            "partial_tp_be_buffer_pips": CONFIG.get("partial_tp_be_buffer_pips", 2),
         },
     })
 
@@ -2418,7 +2519,9 @@ def api_config():
         editable = ["risk_pct", "min_rr", "max_trades", "symbol",
                     "scan_interval", "min_confluence", "fvg_min_pips",
                     "active_strategies", "require_kill_zone",
-                    "trail_be_pips", "trail_be_buffer_pips"]
+                    "trail_be_pips", "trail_be_buffer_pips",
+                    "dynamic_sl_tp", "min_rr_dynamic", "atr_sl_multiplier", "tp_pullback_pips",
+                    "partial_tp", "partial_tp_pct", "partial_tp_be_buffer_pips"]
         for k in editable:
             if k in data:
                 CONFIG[k] = data[k]
