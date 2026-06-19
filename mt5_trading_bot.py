@@ -69,6 +69,16 @@ CONFIG = {
     "sl_buffer_pips":   5.0,    # Buffer pips beyond OB for SL
     "min_confluence":   3,      # Min confluence score to execute
 
+    # ── Dynamic SL / TP  (structure + volatility-aware)
+    # When True: SL goes beyond the structural invalidation swing;
+    #            TP targets the nearest opposing structural level.
+    # When False: legacy fixed R:R mode (sl_buffer + min_rr).
+    "dynamic_sl_tp":     False,  # Toggle structure-based SL/TP
+    "min_rr_dynamic":    1.0,    # Min acceptable R:R in dynamic mode
+    "atr_period":        14,     # ATR period for volatility floor on SL
+    "atr_sl_multiplier": 0.5,    # SL ≥ this many ATRs beyond invalidation swing
+    "tp_pullback_pips":  3.0,    # Pull TP back this many pips from structural obstacle
+
     # ── Trade monitoring & dynamic exit
     "bias_exit":       True,   # Close trade if HTF bias reverses
     "bos_exit":        True,   # Close trade on BOS/CHoCH against direction
@@ -1251,6 +1261,165 @@ def kill_zone_status() -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
+#  AVERAGE TRUE RANGE  (volatility baseline for SL sizing)
+# ══════════════════════════════════════════════════════════════
+
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """Standard Wilder ATR.  Returns 0.0 when insufficient data."""
+    if len(df) < period + 1:
+        return 0.0
+    prev  = df["close"].shift(1)
+    tr    = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev).abs(),
+        (df["low"]  - prev).abs(),
+    ], axis=1).max(axis=1)
+    val = tr.rolling(period).mean().iloc[-1]
+    return float(val) if not pd.isna(val) else 0.0
+
+
+# ══════════════════════════════════════════════════════════════
+#  STRUCTURE-BASED SL / TP
+# ══════════════════════════════════════════════════════════════
+
+def find_structural_sl(
+    direction: str,
+    entry: float,
+    sh: list[dict],
+    sl_swings: list[dict],
+    atr: float,
+    pip: float,
+) -> float:
+    """
+    Place SL just beyond the most recent swing that would structurally
+    invalidate the trade.  A minimum ATR-based floor prevents the stop
+    sitting inside normal market noise.
+
+    BUY  → below the most recently formed swing low below entry
+    SELL → above the most recently formed swing high above entry
+    """
+    buf = max(CONFIG["sl_buffer_pips"] * pip,
+              CONFIG["atr_sl_multiplier"] * atr)
+
+    if direction == "BUY":
+        candidates = sorted(
+            [s for s in sl_swings if s["price"] < entry],
+            key=lambda x: x["i"], reverse=True,
+        )
+        if candidates:
+            return round(candidates[0]["price"] - buf, 5)
+        return round(entry - max(CONFIG["sl_buffer_pips"] * pip, atr), 5)
+    else:
+        candidates = sorted(
+            [s for s in sh if s["price"] > entry],
+            key=lambda x: x["i"], reverse=True,
+        )
+        if candidates:
+            return round(candidates[0]["price"] + buf, 5)
+        return round(entry + max(CONFIG["sl_buffer_pips"] * pip, atr), 5)
+
+
+def find_structural_tp(
+    direction: str,
+    entry: float,
+    sl_price: float,
+    sh: list[dict],
+    sl_swings: list[dict],
+    sr: list[dict],
+    obs: list[dict],
+    fvgs: list[dict],
+    bprs: list[dict],
+    ipda: dict,
+    pip: float,
+) -> float | None:
+    """
+    Aim TP at the NEAREST structural obstacle in the trade direction,
+    pulling back tp_pullback_pips to exit before the level rejects price.
+
+    Targets evaluated (nearest wins):
+      swing high/low · S&R resistance/support · opposing OBs
+      FVG midpoints  · BPR midpoints           · IPDA range highs/lows
+    """
+    risk       = abs(entry - sl_price)
+    min_reward = risk * CONFIG.get("min_rr_dynamic", 1.0)
+    pullback   = CONFIG.get("tp_pullback_pips", 3.0) * pip
+
+    candidates: list[float] = []
+
+    if direction == "BUY":
+        floor = entry + min_reward
+
+        for s in sh:
+            if s["price"] > floor:
+                candidates.append(s["price"] - pullback)
+
+        for lvl in sr:
+            if lvl["type"] == "RESISTANCE" and lvl["price"] > floor:
+                candidates.append(lvl["price"] - pullback)
+
+        for ob in obs:
+            if ob["type"] == "BEARISH_OB":
+                target = ob.get("low", ob.get("bottom", 0))
+                if target > floor:
+                    candidates.append(target - pullback)
+
+        for fvg in fvgs:
+            if fvg["type"] == "BEARISH_FVG":
+                mid = (fvg.get("top", fvg.get("high", 0)) + fvg.get("bottom", fvg.get("low", 0))) / 2
+                if mid > floor:
+                    candidates.append(mid - pullback)
+
+        for bpr in bprs:
+            mid = (bpr.get("high", bpr.get("top", 0)) + bpr.get("low", bpr.get("bottom", 0))) / 2
+            if mid > floor:
+                candidates.append(mid - pullback)
+
+        for _, data in ipda.items():
+            lvl = data.get("high", 0)
+            if lvl > floor:
+                candidates.append(lvl - pullback)
+
+        valid = [c for c in candidates if c > entry]
+        return round(min(valid), 5) if valid else None
+
+    else:  # SELL
+        ceiling = entry - min_reward
+
+        for s in sl_swings:
+            if s["price"] < ceiling:
+                candidates.append(s["price"] + pullback)
+
+        for lvl in sr:
+            if lvl["type"] == "SUPPORT" and lvl["price"] < ceiling:
+                candidates.append(lvl["price"] + pullback)
+
+        for ob in obs:
+            if ob["type"] == "BULLISH_OB":
+                target = ob.get("high", ob.get("top", float("inf")))
+                if target < ceiling:
+                    candidates.append(target + pullback)
+
+        for fvg in fvgs:
+            if fvg["type"] == "BULLISH_FVG":
+                mid = (fvg.get("top", fvg.get("high", 0)) + fvg.get("bottom", fvg.get("low", 0))) / 2
+                if mid < ceiling:
+                    candidates.append(mid + pullback)
+
+        for bpr in bprs:
+            mid = (bpr.get("high", bpr.get("top", 0)) + bpr.get("low", bpr.get("bottom", 0))) / 2
+            if mid < ceiling:
+                candidates.append(mid + pullback)
+
+        for _, data in ipda.items():
+            lvl = data.get("low", float("inf"))
+            if lvl < ceiling:
+                candidates.append(lvl + pullback)
+
+        valid = [c for c in candidates if c < entry]
+        return round(max(valid), 5) if valid else None
+
+
+# ══════════════════════════════════════════════════════════════
 #  SIGNAL GENERATION  (ICT/SMC confluence scoring — full suite)
 # ══════════════════════════════════════════════════════════════
 
@@ -1279,6 +1448,9 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
     fvgs         = ctx.get("fvgs", [])
     sr           = ctx.get("sr", [])
     bprs         = ctx.get("bprs", [])
+    sh           = ctx.get("sh", [])
+    sl_swings    = ctx.get("sl", [])
+    df_ctx       = ctx.get("df", None)      # for ATR & structural SL/TP
     rej_blocks   = ctx.get("rej_blocks", [])
     sweeps       = ctx.get("sweeps", [])
     turtle_soups = ctx.get("turtle_soups", [])
@@ -1443,8 +1615,21 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
                     miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
 
             if len(hit) >= CONFIG["min_confluence"]:
-                sl_price = ol - buf
-                tp_price = ask + (ask - sl_price) * CONFIG["min_rr"]
+                if CONFIG.get("dynamic_sl_tp", False) and df_ctx is not None:
+                    atr      = calculate_atr(df_ctx, CONFIG.get("atr_period", 14))
+                    sl_price = find_structural_sl("BUY", ask, sh, sl_swings, atr, pip)
+                    dyn_tp   = find_structural_tp("BUY", ask, sl_price, sh, sl_swings,
+                                                  sr, obs, fvgs, bprs, ipda, pip)
+                    if dyn_tp is not None and dyn_tp > ask:
+                        tp_price = dyn_tp
+                        hit.append("Dynamic SL/TP (structure-based)")
+                    else:
+                        # No structural target found — fall back to fixed R:R
+                        tp_price = ask + (ask - sl_price) * CONFIG["min_rr"]
+                        hit.append("Dynamic SL / Fixed R:R fallback")
+                else:
+                    sl_price = ol - buf
+                    tp_price = ask + (ask - sl_price) * CONFIG["min_rr"]
                 signals.append(_build_signal("BUY", symbol, ask, sl_price, tp_price,
                                             hit, miss, ob, is_kz, pip))
             else:
@@ -1589,8 +1774,20 @@ def generate_signals(symbol: str, bias: str, ctx: dict) -> list[dict]:
                     miss.append(f"Inducement unswept @ {inducements[0]['price']:.5f}")
 
             if len(hit) >= CONFIG["min_confluence"]:
-                sl_price = oh + buf
-                tp_price = bid - (sl_price - bid) * CONFIG["min_rr"]
+                if CONFIG.get("dynamic_sl_tp", False) and df_ctx is not None:
+                    atr      = calculate_atr(df_ctx, CONFIG.get("atr_period", 14))
+                    sl_price = find_structural_sl("SELL", bid, sh, sl_swings, atr, pip)
+                    dyn_tp   = find_structural_tp("SELL", bid, sl_price, sh, sl_swings,
+                                                  sr, obs, fvgs, bprs, ipda, pip)
+                    if dyn_tp is not None and dyn_tp < bid:
+                        tp_price = dyn_tp
+                        hit.append("Dynamic SL/TP (structure-based)")
+                    else:
+                        tp_price = bid - (sl_price - bid) * CONFIG["min_rr"]
+                        hit.append("Dynamic SL / Fixed R:R fallback")
+                else:
+                    sl_price = oh + buf
+                    tp_price = bid - (sl_price - bid) * CONFIG["min_rr"]
                 signals.append(_build_signal("SELL", symbol, bid, sl_price, tp_price,
                                             hit, miss, ob, is_kz, pip))
             else:
@@ -1613,7 +1810,8 @@ def _build_signal(
         "sl":         round(sl, 5),
         "tp":         round(tp, 5),
         "risk_pips":  round(abs(entry - sl) / pip, 1),
-        "rr":         CONFIG["min_rr"],
+        "rr":         round(abs(tp - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0,
+        "dynamic_sl_tp": CONFIG.get("dynamic_sl_tp", False),
         "score":      len(hit),
         "confluence": {
             "hit":  hit,
@@ -2017,6 +2215,7 @@ def bot_loop():
             ctx = {
                 "obs": obs, "fvgs": fvgs, "sr": sr,
                 "sh": sh, "sl": sl,
+                "df": df_ltf,   # passed for ATR / structural SL-TP
                 "breakers": breakers, "bprs": bprs,
                 "rej_blocks": rej_blocks, "suspensions": suspensions,
                 "propulsions": propulsions, "vacuums": vacuums,
