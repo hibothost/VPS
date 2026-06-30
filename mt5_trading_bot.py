@@ -2526,7 +2526,35 @@ def api_config():
             if k in data:
                 CONFIG[k] = data[k]
         if "symbol" in data and state["connected"]:
-            mt5.symbol_select(CONFIG["symbol"], True)
+            new_sym = CONFIG["symbol"]
+            mt5.symbol_select(new_sym, True)
+            # Immediately fetch a live price for the new symbol so the dashboard
+            # zone panels don't show "Connect bot to view" while waiting for the
+            # next full scan cycle.
+            tick = get_tick(new_sym)
+            if tick:
+                info   = mt5.symbol_info(new_sym)
+                digits = info.digits if info else 5
+                state["current_price"] = {
+                    "symbol": new_sym,
+                    "bid":    round(float(tick.bid), digits),
+                    "ask":    round(float(tick.ask), digits),
+                    "mid":    round((float(tick.bid) + float(tick.ask)) / 2, digits),
+                    "digits": digits,
+                }
+            else:
+                state["current_price"] = {}
+            # Clear zone/analysis data that belongs to the previous symbol so the
+            # dashboard never shows stale zones for the wrong pair.
+            state["zones_ob"]     = []
+            state["zones_fvg"]    = []
+            state["zones_brk"]    = []
+            state["zones_bpr"]    = []
+            state["zones_sweeps"] = []
+            state["zones_induct"] = []
+            state["zones_gaps"]   = []
+            state["ipda"]         = {}
+            state["sr_levels"]    = []
         return jsonify({"message": "Config updated", "config": {k: CONFIG[k] for k in editable if k in CONFIG}})
     safe = {k: v for k, v in CONFIG.items() if k not in ("password",)}
     return jsonify(safe)

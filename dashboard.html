@@ -1066,6 +1066,17 @@ async function selectSymbol(sym) {
   lastSymbol = "";
   lastPrice  = 0;
 
+  // Immediately show a friendly "switching" placeholder in every analysis
+  // panel so the user never sees "Connect bot to view" while the bot fetches
+  // the first tick and waits for its next scan on the new symbol.
+  const switchMsg = `<div style="color:var(--muted);font-size:9px">⟳ Switching to ${sym}…</div>`;
+  ["zone-map-panel","liq-map-panel","gaps-panel","ipda-list","smt-content"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = switchMsg;
+  });
+  const srEl = document.getElementById("sr-list");
+  if (srEl) srEl.innerHTML = switchMsg;
+
   try {
     await fetch(BASE+"/api/config",{
         method: "POST",
